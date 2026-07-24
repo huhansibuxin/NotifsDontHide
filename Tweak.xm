@@ -1,55 +1,105 @@
 #import <UIKit/UIKit.h>
 
 // ============================================================
-// NotifsDontHide
+// NotifsDontHide v1.0.2 — rootless (ElleKit)
 //
-// Inspired by KeepItSimple (P2KDev) and Notif (KingPuffDadday).
-// Zero-config tweak: all notifications stay in ONE list,
-// history/missed sections are eliminated at the source.
+// Rewritten based on reverse-engineering OneNotificationListFFS.
+// iOS 16 significantly restructured notification architecture.
 // ============================================================
 
-// -- Master list: controls notification section routing --
+#pragma mark - NCNotificationMasterList
+
 @interface NCNotificationMasterList : NSObject
-- (BOOL)_isNotificationRequestForIncomingSection:(id)arg1;
-- (BOOL)_isNotificationRequestForHistorySection:(id)arg1;
-- (void)migrateNotifications;
-- (void)_migrateNotificationsFromList:(id)arg1 toList:(id)arg2 passingTest:(id)arg3 hideToList:(BOOL)arg4 clearRequests:(BOOL)arg5;
+// iOS 16 migration (renamed)
+- (void)migrateNotificationsFromIncomingSectionToHistorySection;
+- (void)migrateNotificationsFromIncomingSectionToHistorySectionAndHideHistorySection:(BOOL)arg1;
+// Reveal & display style
 - (BOOL)isNotificationHistoryRevealed;
 - (BOOL)shouldAllowNotificationHistoryReveal;
-- (BOOL)notificationListRevealCoordinatorShouldAllowReveal:(id)arg1;
 - (void)setShouldAllowNotificationHistoryReveal:(BOOL)arg1;
-- (void)setRevealCoordinator:(id)arg1;
-- (id)revealCoordinator;
-- (BOOL)isMissedSectionActive;
-- (void)setMissedSectionActive:(BOOL)arg1;
-- (BOOL)notificationStructuredSectionList:(id)arg1 shouldFilterNotificationRequest:(id)arg2;
+- (void)setNotificationHistoryRevealed:(BOOL)arg1;
+- (BOOL)notificationListRevealCoordinatorShouldAllowReveal:(id)arg1;
+- (BOOL)notificationListRevealCoordinatorShouldAllowRevealTransition:(id)arg1;
+- (BOOL)notificationListInteractiveTransitionCoordinatorRequestsIsHiddenListRevealed:(id)arg1;
+// Legacy section routing (fallback)
+- (BOOL)_isNotificationRequestForIncomingSection:(id)arg1;
+- (BOOL)_isNotificationRequestForHistorySection:(id)arg1;
+@end
+
+#pragma mark - NCNotificationStructuredSectionList
+
+@interface NCNotificationStructuredSectionList : NSObject
+- (id)incomingSectionList;
+- (id)historySectionList;
+- (id)_sectionForNotificationRequest:(id)arg1;
+- (id)_sectionForStoredNotificationRequestOfSectionType:(long long)arg1;
+@end
+
+#pragma mark - NCNotificationListCell
+
+@interface NCNotificationListCell : UIView
+- (BOOL)cellWithActionsRevealed;
+- (void)setCellWithActionsRevealed:(BOOL)arg1;
+- (void)setSideSwipedWithoutTouch:(BOOL)arg1;
+- (void)hideActionButtonsAnimated:(BOOL)arg1 fastAnimation:(BOOL)arg2 completion:(id)arg3;
+- (void)_notifyDelegateDidDismiss;
+@end
+
+#pragma mark - CSCombinedListViewController
+
+@interface CSCombinedListViewController : UIViewController
+- (BOOL)isListDisplayStyleHiddenForUserInteraction;
+- (void)setListDisplayStyleHiddenForUserInteraction:(BOOL)arg1;
+- (id)currentListDisplayStyleSetting;
+- (void)setCurrentListDisplayStyleSetting:(id)arg1;
+- (void)performCustomTransitionToVisible:(BOOL)arg1 withAnimationSettings:(id)arg2 completion:(id)arg3;
+@end
+
+#pragma mark - NCNotificationShortLookViewController
+
+@interface NCNotificationShortLookViewController : UIViewController
+- (void)noteWillPresentForUserGesture;
+- (void)_notifyDelegateDidDismiss;
+@end
+
+#pragma mark - NCNotificationGroupList
+
+@interface NCNotificationGroupList : NSObject
+- (BOOL)isGroupForNotificationRequest:(id)arg1;
+- (void)handleTapOnNotificationListBaseComponent:(id)arg1;
+@end
+
+#pragma mark - NCNotificationRequest
+
+@interface NCNotificationRequest : NSObject
+@property (nonatomic,copy,readonly) NSString *sectionIdentifier;
+@property (nonatomic,copy,readonly) NSString *threadIdentifier;
 @end
 
 // ============================================================
-// Hook NCNotificationMasterList: kill history/missed sections
+// HOOKS
 // ============================================================
+
+// ---- NCNotificationMasterList ----
+
 %hook NCNotificationMasterList
 
-// All notifications → incoming section
+- (void)migrateNotificationsFromIncomingSectionToHistorySection {
+    return;
+}
+
+- (void)migrateNotificationsFromIncomingSectionToHistorySectionAndHideHistorySection:(BOOL)arg1 {
+    return;
+}
+
 - (BOOL)_isNotificationRequestForIncomingSection:(id)arg1 {
     return YES;
 }
 
-// No notification → history section
 - (BOOL)_isNotificationRequestForHistorySection:(id)arg1 {
     return NO;
 }
 
-// Block migration between sections
-- (void)migrateNotifications {
-    return;
-}
-
-- (void)_migrateNotificationsFromList:(id)arg1 toList:(id)arg2 passingTest:(id)arg3 hideToList:(BOOL)arg4 clearRequests:(BOOL)arg5 {
-    return;
-}
-
-// Always treat history as revealed (prevents UI from hiding old notifs)
 - (BOOL)isNotificationHistoryRevealed {
     return YES;
 }
@@ -58,52 +108,124 @@
     return NO;
 }
 
-- (BOOL)notificationListRevealCoordinatorShouldAllowReveal:(id)arg1 {
-    return NO;
-}
-
 - (void)setShouldAllowNotificationHistoryReveal:(BOOL)arg1 {
     %orig(NO);
 }
 
-// Disable reveal coordinator
-- (void)setRevealCoordinator:(id)arg1 {
-    return;
+- (void)setNotificationHistoryRevealed:(BOOL)arg1 {
+    %orig(YES);
 }
 
-- (id)revealCoordinator {
-    return nil;
-}
-
-// Disable missed section
-- (BOOL)isMissedSectionActive {
+- (BOOL)notificationListRevealCoordinatorShouldAllowReveal:(id)arg1 {
     return NO;
 }
 
-- (void)setMissedSectionActive:(BOOL)arg1 {
-    %orig(NO);
+- (BOOL)notificationListRevealCoordinatorShouldAllowRevealTransition:(id)arg1 {
+    return NO;
 }
 
-// Don't filter anything out
-- (BOOL)notificationStructuredSectionList:(id)arg1 shouldFilterNotificationRequest:(id)arg2 {
+- (BOOL)notificationListInteractiveTransitionCoordinatorRequestsIsHiddenListRevealed:(id)arg1 {
     return NO;
 }
 
 %end
 
+// ---- NCNotificationStructuredSectionList ----
 
-// ============================================================
-// Force per-app notification grouping
-// Set threadIdentifier = bundle ID so all notifs from
-// the same app merge into one grouped notification.
-// ============================================================
-@interface NCNotificationRequest
-@property (nonatomic,copy,readonly) NSString *sectionIdentifier;
-@property (nonatomic,copy,readonly) NSString *threadIdentifier;
-@end
+%hook NCNotificationStructuredSectionList
+
+- (id)_sectionForNotificationRequest:(id)arg1 {
+    return [self incomingSectionList];
+}
+
+- (id)_sectionForStoredNotificationRequestOfSectionType:(long long)arg1 {
+    return [self incomingSectionList];
+}
+
+- (id)historySectionList {
+    return nil;
+}
+
+%end
+
+// ---- NCNotificationListCell ----
+
+%hook NCNotificationListCell
+
+- (BOOL)cellWithActionsRevealed {
+    return NO;
+}
+
+- (void)setCellWithActionsRevealed:(BOOL)arg1 {
+    %orig(NO);
+}
+
+- (void)setSideSwipedWithoutTouch:(BOOL)arg1 {
+    %orig(NO);
+}
+
+- (void)hideActionButtonsAnimated:(BOOL)arg1 fastAnimation:(BOOL)arg2 completion:(id)arg3 {
+    return;
+}
+
+- (void)_notifyDelegateDidDismiss {
+    return;
+}
+
+%end
+
+// ---- CSCombinedListViewController ----
+
+%hook CSCombinedListViewController
+
+- (BOOL)isListDisplayStyleHiddenForUserInteraction {
+    return NO;
+}
+
+- (void)setListDisplayStyleHiddenForUserInteraction:(BOOL)arg1 {
+    %orig(NO);
+}
+
+- (void)performCustomTransitionToVisible:(BOOL)arg1 withAnimationSettings:(id)arg2 completion:(id)arg3 {
+    return;
+}
+
+%end
+
+// ---- NCNotificationShortLookViewController ----
+
+%hook NCNotificationShortLookViewController
+
+- (void)noteWillPresentForUserGesture {
+    return;
+}
+
+- (void)_notifyDelegateDidDismiss {
+    return;
+}
+
+%end
+
+// ---- NCNotificationGroupList ----
+
+%hook NCNotificationGroupList
+
+- (BOOL)isGroupForNotificationRequest:(id)arg1 {
+    return YES;
+}
+
+- (void)handleTapOnNotificationListBaseComponent:(id)arg1 {
+    return;
+}
+
+%end
+
+// ---- NCNotificationRequest ----
 
 %hook NCNotificationRequest
+
 - (NSString *)threadIdentifier {
     return self.sectionIdentifier;
 }
+
 %end
