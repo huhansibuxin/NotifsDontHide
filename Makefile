@@ -17,6 +17,6 @@ include $(THEOS)/makefiles/common.mk
 include $(THEOS_MAKE_PATH)/tweak.mk
 
 after-stage::
-	mkdir -p $(THEOS_STAGING_DIR)/var/jb/Library/MobileSubstrate/DynamicLibraries
-	cp layout/Library/MobileSubstrate/DynamicLibraries/OneNotificationListFFS.dylib $(THEOS_STAGING_DIR)/var/jb/Library/MobileSubstrate/DynamicLibraries/
-	cp layout/Library/MobileSubstrate/DynamicLibraries/OneNotificationListFFS.plist $(THEOS_STAGING_DIR)/var/jb/Library/MobileSubstrate/DynamicLibraries/
+	mkdir -p $(THEOS_STAGING_DIR)/Library/MobileSubstrate/DynamicLibraries
+	cp layout/Library/MobileSubstrate/DynamicLibraries/OneNotificationListFFS.dylib $(THEOS_STAGING_DIR)/Library/MobileSubstrate/DynamicLibraries/
+	cp layout/Library/MobileSubstrate/DynamicLibraries/OneNotificationListFFS.plist $(THEOS_STAGING_DIR)/Library/MobileSubstrate/DynamicLibraries/

@@ -12,7 +12,13 @@
 %hook NCNotificationRequest
 
 - (NSString *)threadIdentifier {
-    return self.sectionIdentifier;
+    NSString *orig = %orig;
+    NSString *section = self.sectionIdentifier;
+    static int callCount = 0;
+    if (++callCount <= 5) {
+        NSLog(@"[NHD] threadIdentifier: orig=%@ → section=%@", orig, section);
+    }
+    return section;
 }
 
 %end
