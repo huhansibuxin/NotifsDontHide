@@ -1,33 +1,36 @@
-// NotifsDontHide
+// NotifsDontHide — explicit MSHookMessageEx, bypass Logos arm64e issues.
 // OneNotificationListFFS.dylib (in layout) handles notification persistence.
 
-#import <Foundation/Foundation.h>
+#import <substrate.h>
+#import <objc/runtime.h>
 
-@interface NCNotificationRequest : NSObject
-@property (nonatomic,copy,readonly) NSString *sectionIdentifier;
-@property (nonatomic,copy,readonly) NSString *threadIdentifier;
-@end
+static NSString *(*orig_threadIdentifier)(id self, SEL _cmd);
+static NSInteger (*orig_notificationCount)(id self, SEL _cmd);
 
-@interface NCNotificationGroupList : NSObject
-- (NSInteger)notificationCount;
-@end
-
-// Force same-app notifications into one group
-%hook NCNotificationRequest
-- (NSString *)threadIdentifier {
-    return self.sectionIdentifier;
+static NSString *hook_threadIdentifier(id self, SEL _cmd) {
+    return objc_msgSend(self, sel_getUid("sectionIdentifier"));
 }
-%end
 
-// Cap visible notifications to 2 per group
-%hook NCNotificationGroupList
-- (NSInteger)notificationCount {
-    NSInteger orig = %orig;
+static NSInteger hook_notificationCount(id self, SEL _cmd) {
+    NSInteger orig = orig_notificationCount(self, _cmd);
     return (orig > 2) ? 2 : orig;
 }
-%end
 
 %ctor {
+    MSHookMessageEx(
+        objc_getClass("NCNotificationRequest"),
+        sel_getUid("threadIdentifier"),
+        (IMP)&hook_threadIdentifier,
+        (IMP*)&orig_threadIdentifier
+    );
+
+    MSHookMessageEx(
+        objc_getClass("NCNotificationGroupList"),
+        sel_getUid("notificationCount"),
+        (IMP)&hook_notificationCount,
+        (IMP*)&orig_notificationCount
+    );
+
     CFPreferencesSetAppValue(CFSTR("enabled"), kCFBooleanTrue,
         CFSTR("com.b4db1r3.onenotificationlistffs"));
     CFPreferencesAppSynchronize(CFSTR("com.b4db1r3.onenotificationlistffs"));
