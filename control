@@ -1,9 +1,9 @@
 Package: com.huhansibuxin.notifsdonthide
 Name: NotifsDontHide
-Version: 1.0.0
-Architecture: iphoneos-arm
+Depends: ellekit
+Version: 1.0.1
+Architecture: iphoneos-arm64
 Description: Notifications never hide in Notification Center. Keep all notifications visible in one unified list.
 Maintainer: huhansibuxin
 Author: huhansibuxin
 Section: Tweaks
-Depends: mobilesubstrate
