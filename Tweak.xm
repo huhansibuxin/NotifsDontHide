@@ -1,19 +1,20 @@
 #import <UIKit/UIKit.h>
 
 // ============================================================
-// NotifsDontHide v1.0.2 — rootless (ElleKit)
+// NotifsDontHide v1.0.3 — rootless (ElleKit)
 //
-// Rewritten based on reverse-engineering OneNotificationListFFS.
-// iOS 16 significantly restructured notification architecture.
+// Completely rewritten based on exact __objc_methname list
+// extracted from OneNotificationListFFS.dylib.
+//
+// iOS 16+: _isNotificationRequestForIncomingSection is DEAD.
+// Section routing now goes through NCNotificationStructuredSectionList.
 // ============================================================
 
 #pragma mark - NCNotificationMasterList
 
 @interface NCNotificationMasterList : NSObject
-// iOS 16 migration (renamed)
 - (void)migrateNotificationsFromIncomingSectionToHistorySection;
 - (void)migrateNotificationsFromIncomingSectionToHistorySectionAndHideHistorySection:(BOOL)arg1;
-// Reveal & display style
 - (BOOL)isNotificationHistoryRevealed;
 - (BOOL)shouldAllowNotificationHistoryReveal;
 - (void)setShouldAllowNotificationHistoryReveal:(BOOL)arg1;
@@ -21,18 +22,20 @@
 - (BOOL)notificationListRevealCoordinatorShouldAllowReveal:(id)arg1;
 - (BOOL)notificationListRevealCoordinatorShouldAllowRevealTransition:(id)arg1;
 - (BOOL)notificationListInteractiveTransitionCoordinatorRequestsIsHiddenListRevealed:(id)arg1;
-// Legacy section routing (fallback)
-- (BOOL)_isNotificationRequestForIncomingSection:(id)arg1;
-- (BOOL)_isNotificationRequestForHistorySection:(id)arg1;
+- (void)setGroupListView:(id)arg1;
+- (id)groupListView;
+- (id)historySectionList;
+- (id)incomingSectionList;
 @end
 
 #pragma mark - NCNotificationStructuredSectionList
 
 @interface NCNotificationStructuredSectionList : NSObject
-- (id)incomingSectionList;
-- (id)historySectionList;
 - (id)_sectionForNotificationRequest:(id)arg1;
 - (id)_sectionForStoredNotificationRequestOfSectionType:(long long)arg1;
+- (id)incomingSectionList;
+- (id)historySectionList;
+- (id)_currentCellForNotificationRequest:(id)arg1;
 @end
 
 #pragma mark - NCNotificationListCell
@@ -43,6 +46,8 @@
 - (void)setSideSwipedWithoutTouch:(BOOL)arg1;
 - (void)hideActionButtonsAnimated:(BOOL)arg1 fastAnimation:(BOOL)arg2 completion:(id)arg3;
 - (void)_notifyDelegateDidDismiss;
+- (void)_handleTapToExpandGroupForNotificationRequest:(id)arg1;
+- (void)_handleTapOnView:(id)arg1;
 @end
 
 #pragma mark - CSCombinedListViewController
@@ -53,6 +58,10 @@
 - (id)currentListDisplayStyleSetting;
 - (void)setCurrentListDisplayStyleSetting:(id)arg1;
 - (void)performCustomTransitionToVisible:(BOOL)arg1 withAnimationSettings:(id)arg2 completion:(id)arg3;
+- (BOOL)isTransitioning;
+- (BOOL)isPresented;
+- (void)viewWillAppear:(BOOL)arg1;
+- (void)viewDidAppear:(BOOL)arg1;
 @end
 
 #pragma mark - NCNotificationShortLookViewController
@@ -60,13 +69,29 @@
 @interface NCNotificationShortLookViewController : UIViewController
 - (void)noteWillPresentForUserGesture;
 - (void)_notifyDelegateDidDismiss;
+- (id)notificationRequest;
 @end
 
 #pragma mark - NCNotificationGroupList
 
 @interface NCNotificationGroupList : NSObject
 - (BOOL)isGroupForNotificationRequest:(id)arg1;
+- (BOOL)isGrouped;
+- (void)toggleGroupedState;
+- (void)collapseGroupForNotificationRequest:(id)arg1 withCompletion:(id)arg2;
 - (void)handleTapOnNotificationListBaseComponent:(id)arg1;
+- (id)notificationGroups;
+- (id)leadingNotificationRequest;
+- (id)orderedRequests;
+@end
+
+#pragma mark - SBLockScreenManager
+
+@interface SBLockScreenManager : NSObject
++ (id)sharedInstanceIfExists;
+- (BOOL)isLockScreenActive;
+- (BOOL)isLockScreenVisible;
+- (BOOL)isLockScreenPresentationPending;
 @end
 
 #pragma mark - NCNotificationRequest
@@ -74,6 +99,12 @@
 @interface NCNotificationRequest : NSObject
 @property (nonatomic,copy,readonly) NSString *sectionIdentifier;
 @property (nonatomic,copy,readonly) NSString *threadIdentifier;
+@end
+
+#pragma mark - CSCoverSheetViewController
+
+@interface CSCoverSheetViewController : UIViewController
+- (void)_coversheetDidDismiss;
 @end
 
 // ============================================================
@@ -90,14 +121,6 @@
 
 - (void)migrateNotificationsFromIncomingSectionToHistorySectionAndHideHistorySection:(BOOL)arg1 {
     return;
-}
-
-- (BOOL)_isNotificationRequestForIncomingSection:(id)arg1 {
-    return YES;
-}
-
-- (BOOL)_isNotificationRequestForHistorySection:(id)arg1 {
-    return NO;
 }
 
 - (BOOL)isNotificationHistoryRevealed {
@@ -126,6 +149,10 @@
 
 - (BOOL)notificationListInteractiveTransitionCoordinatorRequestsIsHiddenListRevealed:(id)arg1 {
     return NO;
+}
+
+- (id)historySectionList {
+    return nil;
 }
 
 %end
@@ -172,6 +199,14 @@
     return;
 }
 
+- (void)_handleTapToExpandGroupForNotificationRequest:(id)arg1 {
+    return;
+}
+
+- (void)_handleTapOnView:(id)arg1 {
+    return;
+}
+
 %end
 
 // ---- CSCombinedListViewController ----
@@ -215,6 +250,10 @@
 }
 
 - (void)handleTapOnNotificationListBaseComponent:(id)arg1 {
+    return;
+}
+
+- (void)toggleGroupedState {
     return;
 }
 
