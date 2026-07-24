@@ -16,3 +16,14 @@
 }
 
 %end
+
+// ============================================================
+// Ensure OneNotificationListFFS.dylib's CFPreferences switch is ON.
+// The original dylib checks CFPreferencesGetAppBooleanValue("enabled", ...)
+// with NULL default → false when unset, so all 49 hooks are dormant.
+// ============================================================
+%ctor {
+    CFPreferencesSetAppValue(CFSTR("enabled"), kCFBooleanTrue,
+        CFSTR("com.b4db1r3.onenotificationlistffs"));
+    CFPreferencesAppSynchronize(CFSTR("com.b4db1r3.onenotificationlistffs"));
+}
