@@ -25,11 +25,6 @@
 - (BOOL)notificationStructuredSectionList:(id)arg1 shouldFilterNotificationRequest:(id)arg2;
 @end
 
-// -- "No Older Notifications" hint --
-@interface NCNotificationListSectionRevealHintView : UIView
-@end
-
-
 // ============================================================
 // Hook NCNotificationMasterList: kill history/missed sections
 // ============================================================
@@ -92,18 +87,6 @@
 // Don't filter anything out
 - (BOOL)notificationStructuredSectionList:(id)arg1 shouldFilterNotificationRequest:(id)arg2 {
     return NO;
-}
-
-%end
-
-
-// ============================================================
-// Hide "No Older Notifications" hint text
-// ============================================================
-%hook NCNotificationListSectionRevealHintView
-
-- (void)layoutSubviews {
-    return;
 }
 
 %end
