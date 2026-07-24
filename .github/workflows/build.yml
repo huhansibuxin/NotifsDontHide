@@ -26,6 +26,8 @@ jobs:
           rm -rf $HOME/theos/sdks/sdks-master $HOME/theos/sdks/master.zip
 
       - name: Build
+        env:
+          THEOS: $HOME/theos
         run: |
           make clean
           make package FINALPACKAGE=1
