@@ -3,12 +3,13 @@
 
 #import <substrate.h>
 #import <objc/runtime.h>
+#import <objc/message.h>
 
 static NSString *(*orig_threadIdentifier)(id self, SEL _cmd);
 static NSInteger (*orig_notificationCount)(id self, SEL _cmd);
 
 static NSString *hook_threadIdentifier(id self, SEL _cmd) {
-    return objc_msgSend(self, sel_getUid("sectionIdentifier"));
+    return ((NSString *(*)(id, SEL))objc_msgSend)(self, @selector(sectionIdentifier));
 }
 
 static NSInteger hook_notificationCount(id self, SEL _cmd) {
@@ -19,14 +20,14 @@ static NSInteger hook_notificationCount(id self, SEL _cmd) {
 %ctor {
     MSHookMessageEx(
         objc_getClass("NCNotificationRequest"),
-        sel_getUid("threadIdentifier"),
+        @selector(threadIdentifier),
         (IMP)&hook_threadIdentifier,
         (IMP*)&orig_threadIdentifier
     );
 
     MSHookMessageEx(
         objc_getClass("NCNotificationGroupList"),
-        sel_getUid("notificationCount"),
+        @selector(notificationCount),
         (IMP)&hook_notificationCount,
         (IMP*)&orig_notificationCount
     );
