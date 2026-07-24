@@ -90,3 +90,20 @@
 }
 
 %end
+
+
+// ============================================================
+// Force per-app notification grouping
+// Set threadIdentifier = bundle ID so all notifs from
+// the same app merge into one grouped notification.
+// ============================================================
+@interface NCNotificationRequest
+@property (nonatomic,copy,readonly) NSString *sectionIdentifier;
+@property (nonatomic,copy,readonly) NSString *threadIdentifier;
+@end
+
+%hook NCNotificationRequest
+- (NSString *)threadIdentifier {
+    return self.sectionIdentifier;
+}
+%end
