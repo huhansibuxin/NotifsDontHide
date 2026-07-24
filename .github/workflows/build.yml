@@ -17,17 +17,16 @@ jobs:
         run: |
           brew install ldid
           git clone --recursive --depth 1 https://github.com/theos/theos.git $HOME/theos
+          echo "THEOS=$HOME/theos" >> $GITHUB_ENV
 
       - name: Install SDK
         run: |
-          curl -L -o $HOME/theos/sdks/master.zip https://github.com/theos/sdks/archive/master.zip
-          unzip -o $HOME/theos/sdks/master.zip -d $HOME/theos/sdks/
-          cp -r $HOME/theos/sdks/sdks-master/iPhoneOS16.5.sdk $HOME/theos/sdks/
-          rm -rf $HOME/theos/sdks/sdks-master $HOME/theos/sdks/master.zip
+          curl -L -o $THEOS/sdks/master.zip https://github.com/theos/sdks/archive/master.zip
+          unzip -o $THEOS/sdks/master.zip -d $THEOS/sdks/
+          cp -r $THEOS/sdks/sdks-master/iPhoneOS16.5.sdk $THEOS/sdks/
+          rm -rf $THEOS/sdks/sdks-master $THEOS/sdks/master.zip
 
       - name: Build
-        env:
-          THEOS: $HOME/theos
         run: |
           make clean
           make package FINALPACKAGE=1
