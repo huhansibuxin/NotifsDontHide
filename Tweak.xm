@@ -9,6 +9,14 @@
 @property (nonatomic,copy,readonly) NSString *threadIdentifier;
 @end
 
+@interface NCNotificationGroupList : NSObject
+- (NSUInteger)notificationCount;
+@end
+
+@interface NCNotificationGroupManager : NSObject
+- (id)groupForNotificationRequest:(id)arg1 createIfNecessary:(BOOL)arg2;
+@end
+
 %hook NCNotificationRequest
 
 - (NSString *)threadIdentifier {
@@ -21,6 +29,32 @@
     return section;
 }
 
+%end
+
+%hook NCNotificationGroupList
+- (NSUInteger)maxVisibleNotificationCount {
+    NSUInteger orig = %orig;
+    NSLog(@"[NHD] GroupList.maxVisibleNotificationCount: orig=%lu → forced=2", (unsigned long)orig);
+    return 2;
+}
+- (BOOL)shouldShowSummaryView {
+    BOOL orig = %orig;
+    NSUInteger total = [self notificationCount];
+    if (total > 2) {
+        NSLog(@"[NHD] GroupList.shouldShowSummaryView: orig=%d, total=%lu → forced YES", orig, (unsigned long)total);
+        return YES;
+    }
+    NSLog(@"[NHD] GroupList.shouldShowSummaryView: orig=%d, total=%lu → passthrough", orig, (unsigned long)total);
+    return orig;
+}
+%end
+
+%hook NCNotificationGroupManager
+- (id)groupForNotificationRequest:(id)arg1 createIfNecessary:(BOOL)arg2 {
+    id group = %orig;
+    NSLog(@"[NHD] GroupManager.groupForNotificationRequest: create=%d, group=%@", arg2, group);
+    return group;
+}
 %end
 
 // ============================================================
