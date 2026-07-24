@@ -30,7 +30,7 @@
 // ============================================================
 %ctor {
     // Write diagnostic file to confirm dylib loaded
-    NSString *diag = @"/var/jb/var/mobile/Documents/NHD_diag.txt";
+    NSString *diag = @"/var/mobile/Documents/NHD_diag.txt";
     NSString *log = [NSString stringWithFormat:
         @"NotifsDontHide loaded\n"
         @"NCNotificationRequest = %@\n"
