@@ -1,4 +1,4 @@
-// NotifsDontHide — force same-app notification grouping.
+// NotifsDontHide
 // OneNotificationListFFS.dylib (in layout) handles notification persistence.
 
 #import <Foundation/Foundation.h>
@@ -9,44 +9,22 @@
 @end
 
 @interface NCNotificationGroupList : NSObject
-- (NSUInteger)notificationCount;
+- (NSInteger)notificationCount;
 @end
 
-@interface NCNotificationGroupManager : NSObject
-- (id)groupForNotificationRequest:(id)arg1 createIfNecessary:(BOOL)arg2;
-@end
-
+// Force same-app notifications into one group
 %hook NCNotificationRequest
-
 - (NSString *)threadIdentifier {
     return self.sectionIdentifier;
 }
-
 %end
 
+// Cap visible notifications to 2 per group
 %hook NCNotificationGroupList
-
-- (NSUInteger)maxVisibleNotificationCount {
-    return 2;
+- (NSInteger)notificationCount {
+    NSInteger orig = %orig;
+    return (orig > 2) ? 2 : orig;
 }
-
-- (BOOL)shouldShowSummaryView {
-    NSUInteger total = [self notificationCount];
-    if (total > 2) {
-        return YES;
-    }
-    return %orig;
-}
-
-%end
-
-%hook NCNotificationGroupManager
-
-- (id)groupForNotificationRequest:(id)arg1 createIfNecessary:(BOOL)arg2 {
-    id group = %orig;
-    return group;
-}
-
 %end
 
 %ctor {
