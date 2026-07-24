@@ -12,8 +12,7 @@ static void (*orig_insertNotificationRequest)(id, SEL, id);
 static void hooked_insertNotificationRequest(id self, SEL _cmd, id request) {
     orig_insertNotificationRequest(self, _cmd, request);
 
-    // 绗?2 鏉￠€氱煡鍒拌揪鏃剁珛鍗虫姌鍙犺缁勶紙浠呰Е鍙戜竴娆★紝閬垮厤 flip-flop锛?    NSUInteger notifCount = ((NSUInteger (*)(id, SEL))objc_msgSend)(self, sel_registerName("notificationCount"));
-    if (notifCount == 2) {
+    if (((NSUInteger (*)(id, SEL))objc_msgSend)(self, sel_registerName("notificationCount")) == 2) {
         ((void (*)(id, SEL))objc_msgSend)(self, sel_registerName("toggleGroupedState"));
     }
 }
