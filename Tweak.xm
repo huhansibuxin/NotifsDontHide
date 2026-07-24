@@ -1,9 +1,8 @@
-// NotifsDontHide — explicit MSHookMessageEx, bypass Logos arm64e issues.
+// NotifsDontHide — explicit MSHookMessageEx.
 // OneNotificationListFFS.dylib (in layout) handles notification persistence.
 
+#import <Foundation/Foundation.h>
 #import <substrate.h>
-#import <objc/runtime.h>
-#import <objc/message.h>
 
 static NSString *(*orig_threadIdentifier)(id self, SEL _cmd);
 static NSInteger (*orig_notificationCount)(id self, SEL _cmd);
