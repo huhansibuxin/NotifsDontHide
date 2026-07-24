@@ -4,15 +4,15 @@
 #import <Foundation/Foundation.h>
 #import <substrate.h>
 
-static NSString *(*orig_threadIdentifier)(id self, SEL _cmd);
-static NSInteger (*orig_notificationCount)(id self, SEL _cmd);
+static id (*orig_threadIdentifier)(id self, SEL _cmd);
+static NSUInteger (*orig_notificationCount)(id self, SEL _cmd);
 
-static NSString *hook_threadIdentifier(id self, SEL _cmd) {
-    return ((NSString *(*)(id, SEL))objc_msgSend)(self, @selector(sectionIdentifier));
+static id hook_threadIdentifier(id self, SEL _cmd) {
+    return ((id (*)(id, SEL))objc_msgSend)(self, @selector(sectionIdentifier));
 }
 
-static NSInteger hook_notificationCount(id self, SEL _cmd) {
-    NSInteger orig = orig_notificationCount(self, _cmd);
+static NSUInteger hook_notificationCount(id self, SEL _cmd) {
+    NSUInteger orig = orig_notificationCount(self, _cmd);
     return (orig > 2) ? 2 : orig;
 }
 
