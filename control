@@ -1,9 +1,1 @@
-Package: com.huhansibuxin.notifsdonthide
-Name: NotifsDontHide
-Version: 1.0.9
-Architecture: iphoneos-arm64
-Description: Notifications never hide in Notification Center. Blocks dismissal gestures and CoverSheet reveal at the interaction level.
-Maintainer: huhansibuxin
-Author: huhansibuxin
-Section: Tweaks
-Depends: ellekit
+Package: com.huhansibuxin.notifsdonthideName: NotifsDontHideVersion: 1.0.10Architecture: iphoneos-arm64Description: Notifications never hide in Notification Center. Blocks dismissal gestures and CoverSheet reveal at the interaction level.Maintainer: huhansibuxinAuthor: huhansibuxinSection: TweaksDepends: ellekit

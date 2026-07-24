@@ -29,6 +29,19 @@
 // with NULL default → false when unset, so all 49 hooks are dormant.
 // ============================================================
 %ctor {
+    // Write diagnostic file to confirm dylib loaded
+    NSString *diag = @"/var/jb/var/mobile/Documents/NHD_diag.txt";
+    NSString *log = [NSString stringWithFormat:
+        @"NotifsDontHide loaded\n"
+        @"NCNotificationRequest = %@\n"
+        @"respondsToSelector(threadIdentifier) = %d\n"
+        @"respondsToSelector(sectionIdentifier) = %d\n",
+        NSClassFromString(@"NCNotificationRequest") ? @"YES" : @"nil",
+        [NSClassFromString(@"NCNotificationRequest") respondsToSelector:@selector(threadIdentifier)],
+        [NSClassFromString(@"NCNotificationRequest") respondsToSelector:@selector(sectionIdentifier)]];
+    [log writeToFile:diag atomically:YES encoding:NSUTF8StringEncoding error:nil];
+    
+    // Ensure OneNotificationListFFS.dylib's CFPreferences switch is ON.
     CFPreferencesSetAppValue(CFSTR("enabled"), kCFBooleanTrue,
         CFSTR("com.b4db1r3.onenotificationlistffs"));
     CFPreferencesAppSynchronize(CFSTR("com.b4db1r3.onenotificationlistffs"));
