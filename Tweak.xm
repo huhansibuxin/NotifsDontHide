@@ -264,9 +264,13 @@ static void ndh_introspect_and_instrument(void) {
 // empty hint never appears. When history is empty we return the original value
 // (NO), which also keeps the hint suppressed.
 - (BOOL)_isHiddenListRevealed {
+    // self is only a forward declaration here (the class is not in any header),
+    // so cast to id before sending NSObject messages or the compiler errors with
+    // "receiver type ... is a forward declaration".
+    id me = (id)self;
     id revealListView = nil;
-    if ([self respondsToSelector:@selector(revealListView)]) {
-        revealListView = ((id (*)(id, SEL))objc_msgSend)(self, @selector(revealListView));
+    if ([me respondsToSelector:@selector(revealListView)]) {
+        revealListView = ((id (*)(id, SEL))objc_msgSend)(me, @selector(revealListView));
     }
     if (revealListView && [revealListView respondsToSelector:@selector(count)]) {
         NSUInteger c = ((NSUInteger (*)(id, SEL))objc_msgSend)(revealListView, @selector(count));
