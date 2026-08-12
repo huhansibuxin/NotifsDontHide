@@ -17,6 +17,7 @@
 #import <Foundation/Foundation.h>
 #import <substrate.h>
 #import <objc/runtime.h>
+#import <stdarg.h>
 
 // Notifications shown individually before the rest collapse into the single
 // merged group bar. 1 => "2nd notification merges into the bar".
@@ -56,8 +57,15 @@ static NSUInteger hook_dynamicGroupingThreshold(id self, SEL _cmd) {
     return kCollapseThreshold;
 }
 
-// Forward declaration (defined later in "Feature 2") so %ctor can reference it.
-static void hook_migrateToHistory(id self, SEL _cmd, BOOL arg1);
+// Debug flag (loaded once in %ctor): if /var/jb/tmp/ndh_debug exists, the
+// migration/hide blockers also log which method fired, so we can see any
+// migration path we missed. Off in production (zero overhead).
+static BOOL g_ndh_debug = NO;
+static void ndh_debug_log(NSString *fmt, ...);
+// Shared swallow IMP for the migration/hide entry points: variadic so it never
+// assumes the (private) argument layout, and void-returning because these
+// action methods return void (verified: 1.0.37's void override did not crash).
+static void hook_blockMigration(id self, SEL _cmd, ...);
 
 %ctor {
     ndh_try_hook("NCNotificationRequest", @selector(threadIdentifier),
@@ -66,28 +74,47 @@ static void hook_migrateToHistory(id self, SEL _cmd, BOOL arg1);
                  (IMP)&hook_collapsingThreshold, (IMP*)&orig_collapsingThreshold);
     ndh_try_hook("NCNotificationStructuredSectionList", @selector(dynamicGroupingThreshold),
                  (IMP)&hook_dynamicGroupingThreshold, (IMP*)&orig_dynamicGroupingThreshold);
-    // Feature 2 (never hide): block the incoming -> history + hide migration
-    // entry point (safe single-arg action method, not the fragile 9-arg one).
+    // Feature 2 (never hide): debug flag + block BOTH migration entry points.
+    g_ndh_debug = [[NSFileManager defaultManager] fileExistsAtPath:@"/var/jb/tmp/ndh_debug"];
+    // Primary lock/unlock + NC-dismiss migration path (0-arg).
+    ndh_try_hook("NCNotificationMasterList",
+                 @selector(migrateNotificationsFromIncomingSectionToHistorySection),
+                 (IMP)&hook_blockMigration, NULL);
+    // The "…AndHideHistorySection:" variant (1-arg) — also blocked.
     ndh_try_hook("NCNotificationMasterList",
                  @selector(migrateNotificationsFromIncomingSectionToHistorySectionAndHideHistorySection:),
-                 (IMP)&hook_migrateToHistory, NULL);
+                 (IMP)&hook_blockMigration, NULL);
 }
 
 // --- Feature 2: never hide (rewritten from OneNotificationListFFS, iOS 16 names) ---
 
+// Debug logger (gated by g_ndh_debug). Injected dylib NSLog is NOT captured by
+// oslog on this setup, so we append to a file instead.
+static void ndh_debug_log(NSString *fmt, ...) {
+    if (!g_ndh_debug) return;
+    va_list ap; va_start(ap, fmt);
+    NSString *msg = [[NSString alloc] initWithFormat:fmt arguments:ap];
+    va_end(ap);
+    NSString *path = @"/var/jb/tmp/NotifsDontHide.log";
+    FILE *f = fopen([path UTF8String], "a");
+    if (f) { fprintf(f, "%s\n", [msg UTF8String]); fclose(f); }
+}
+
 // The primary path Apple uses to move incoming notifications into the hidden
-// "history" section (and hide that section) when Notification Center is
-// dismissed. We block ONLY this single-argument entry point.
+// "history" section (and hide that section) on lock/unlock and NC dismiss is
+// -[NCNotificationMasterList migrateNotificationsFromIncomingSectionToHistorySection]
+// (0-arg) and its "…AndHideHistorySection:" (1-arg) variant. Both are void
+// action methods; we swallow them so notifications never leave the visible
+// incoming section.
 //
 // NOTE: we deliberately do NOT hook the inner 9-arg
 // _migrateNotificationsFromList:toList:passingTest:… method. That private
 // method returns an object on iOS 16; declaring it as a `void` override left a
 // garbage return value that the caller retained via objc_storeStrong and
-// crashed SpringBoard (EXC_BAD_ACCESS -> Safe Mode, see 1.0.36). The 1-arg
-// "…AndHideHistorySection:" action method is void/BOOL-returning and safe to
-// swallow. The hide blockers + hasVisibleContentToReveal below add defense in
-// depth so notifications stay visible even if a secondary migration path fires.
-static void hook_migrateToHistory(id self, SEL _cmd, BOOL arg1) {
+// crashed SpringBoard (EXC_BAD_ACCESS -> Safe Mode, see 1.0.36). Using a
+// variadic IMP here also avoids ever assuming the private argument layout.
+static void hook_blockMigration(id self, SEL _cmd, ...) {
+    ndh_debug_log(@"[NDH] blocked migration/hide: %@", NSStringFromSelector(_cmd));
     // intentionally empty: never migrate to history, never hide.
 }
 
