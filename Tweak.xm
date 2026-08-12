@@ -60,7 +60,7 @@ static void ndh_log(NSString *fmt, ...) {
 static BOOL ndh_shouldApply(id request) {
     if (ndh_targetBundles == nil || ndh_targetBundles.count == 0) return YES;
     if (![request respondsToSelector:@selector(sectionIdentifier)]) return NO;
-    NSString *section = [request sectionIdentifier];
+    NSString *section = ((NSString *(*)(id, SEL))objc_msgSend)(request, @selector(sectionIdentifier));
     return [ndh_targetBundles containsObject:section];
 }
 
