@@ -32,6 +32,7 @@
 #import <objc/runtime.h>
 #import <stdarg.h>
 #import <string.h>
+#import <dispatch/dispatch.h>
 
 // Notifications shown individually before the rest collapse into the single
 // merged group bar. 1 => "2nd notification merges into the bar".
@@ -84,24 +85,54 @@ static void ndh_introspect_and_instrument(void);
 // Feature 2 (never hide): force the history (hidden) list revealed via
 // NCNotificationListRevealCoordinator. Logos %orig with a BOOL scalar argument
 // fails ("Invalid argument structure in %orig") on this method, so we hook the
-// setters with typed IMPs and always call the original with YES. The getters
-// below are overridden in the %hook block to also return YES (belt-and-suspenders).
+// setters with typed IMPs and call the original with a content-aware value.
+//
+// Reveal ONLY when the history actually has content. Revealing an empty history
+// is what makes iOS paint the "No Older Notifications" (没有更早的通知) hint,
+// and that hint is driven by NCNotificationListInteractiveTransitionCoordinator
+// _isHiddenListRevealed — so we must never force-reveal an empty section.
+//
+// Timing race: on the FIRST open after a logout / cold start, the history is not
+// hydrated yet and _revealSectionHasContent reads NO, so iOS would leave it
+// collapsed and notifications would not appear until the next manual open. We
+// therefore collapse now but SCHEDULE a short retry that re-forces the reveal
+// once content has arrived, so notifications show on the very first open.
 static BOOL ndh_revealCoordinatorHasContent(id self) {
     if (![self respondsToSelector:@selector(_revealSectionHasContent)]) return NO;
     return ((BOOL (*)(id, SEL))objc_msgSend)(self, @selector(_revealSectionHasContent));
 }
 
+// Re-force reveal shortly after a setter was collapsed because content was not
+// ready yet. Strong-captures self so the coordinator is guaranteed alive for
+// the (<=500ms) retry window; the retry only acts when content is now present,
+// so it is idempotent and cannot spin.
+static void ndh_scheduleRevealRetry(id self, SEL _cmd,
+                                    void (*orig)(id, SEL, BOOL)) {
+    if (!orig) return;
+    id me = self; // strong capture: keep coordinator alive for the retry window
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 150 * NSEC_PER_MSEC),
+                   dispatch_get_main_queue(), ^{
+        if (ndh_revealCoordinatorHasContent(me)) orig(me, _cmd, YES);
+    });
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 500 * NSEC_PER_MSEC),
+                   dispatch_get_main_queue(), ^{
+        if (ndh_revealCoordinatorHasContent(me)) orig(me, _cmd, YES);
+    });
+}
+
 static void (*orig_setForceRevealed)(id, SEL, BOOL);
 static void hook_setForceRevealed(id self, SEL _cmd, BOOL revealed) {
     if (!orig_setForceRevealed) return;
-    // Only reveal when history actually has content; revealing an empty
-    // history section makes iOS show the "No Older Notifications" hint.
-    orig_setForceRevealed(self, _cmd, ndh_revealCoordinatorHasContent(self) ? YES : NO);
+    BOOL content = ndh_revealCoordinatorHasContent(self);
+    orig_setForceRevealed(self, _cmd, content ? YES : NO);
+    if (!content) ndh_scheduleRevealRetry(self, _cmd, orig_setForceRevealed);
 }
 static void (*orig_setSectionRevealed)(id, SEL, BOOL);
 static void hook_setSectionRevealed(id self, SEL _cmd, BOOL revealed) {
     if (!orig_setSectionRevealed) return;
-    orig_setSectionRevealed(self, _cmd, ndh_revealCoordinatorHasContent(self) ? YES : NO);
+    BOOL content = ndh_revealCoordinatorHasContent(self);
+    orig_setSectionRevealed(self, _cmd, content ? YES : NO);
+    if (!content) ndh_scheduleRevealRetry(self, _cmd, orig_setSectionRevealed);
 }
 
 %ctor {
@@ -210,14 +241,14 @@ static void ndh_introspect_and_instrument(void) {
 %end
 
 %hook NCNotificationListRevealCoordinator
-// 1.0.45: force the history section to be revealed ONLY when it actually has
-// content. iOS 16's NCNotificationListRevealCoordinator controls the hidden
-// (history) list at the bottom of Notification Center. If we force it revealed
-// while empty, iOS shows the "No Older Notifications" hint; by returning the
-// coordinator's own _revealSectionHasContent state, the history list is
-// expanded only after notifications have migrated into it (lock->unlock), so
-// they stay visible without an empty hint. The two shouldAllow* gates permit
-// the reveal (trivial safe BOOLs).
+// Force the history section to be revealed ONLY when it actually has content
+// (see ndh_revealCoordinatorHasContent). Revealing an empty history is exactly
+// what paints the "No Older Notifications" (没有更早的通知) hint, and the hint
+// is ultimately gated by NCNotificationListInteractiveTransitionCoordinator
+// _isHiddenListRevealed (handled separately below). The two shouldAllow* gates
+// trivially permit the reveal; the content-aware getters/setters above keep the
+// history expanded whenever notifications have migrated into it (lock->unlock)
+// without ever showing an empty hint.
 - (BOOL)isForceRevealed { return ndh_revealCoordinatorHasContent(self); }
 - (BOOL)isSectionRevealed { return ndh_revealCoordinatorHasContent(self); }
 - (BOOL)_shouldAllowNotificationListReveal { return YES; }
@@ -225,9 +256,24 @@ static void ndh_introspect_and_instrument(void) {
 %end
 
 %hook NCNotificationListInteractiveTransitionCoordinator
-// Secondary insurance: report the hidden (history) list as already revealed so
-// no interactive collapse transition can hide it. BOOL getter — safe to force.
-- (BOOL)_isHiddenListRevealed { return YES; }
+// THIS is the switch that paints the "No Older Notifications" (没有更早的通知)
+// empty hint: iOS shows that hint whenever the hidden (history) list is reported
+// revealed but actually empty. So we must NOT force YES unconditionally (that is
+// what made the hint permanent in 1.0.44/1.0.45). Instead, reveal only when the
+// reveal list view actually has content — then notifications are shown AND the
+// empty hint never appears. When history is empty we return the original value
+// (NO), which also keeps the hint suppressed.
+- (BOOL)_isHiddenListRevealed {
+    id revealListView = nil;
+    if ([self respondsToSelector:@selector(revealListView)]) {
+        revealListView = ((id (*)(id, SEL))objc_msgSend)(self, @selector(revealListView));
+    }
+    if (revealListView && [revealListView respondsToSelector:@selector(count)]) {
+        NSUInteger c = ((NSUInteger (*)(id, SEL))objc_msgSend)(revealListView, @selector(count));
+        if (c > 0) return YES;
+    }
+    return NO;
+}
 %end
 
 %hook NCNotificationStructuredSectionList
