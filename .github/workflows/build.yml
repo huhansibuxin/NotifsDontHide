@@ -30,10 +30,18 @@ jobs:
           rm -rf sdks-master master.zip
 
       - name: Build
-        run: make package
+        run: make package 2>&1 | tee build.log
 
       - name: Upload deb
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: NotifsDontHide-rootless
           path: packages/*.deb
+
+      - name: Upload build log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: NotifsDontHide-buildlog
+          path: build.log
