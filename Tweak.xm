@@ -56,6 +56,9 @@ static NSUInteger hook_dynamicGroupingThreshold(id self, SEL _cmd) {
     return kCollapseThreshold;
 }
 
+// Forward declaration (defined later in "Feature 2") so %ctor can reference it.
+static void hook_migrateToHistory(id self, SEL _cmd, BOOL arg1);
+
 %ctor {
     ndh_try_hook("NCNotificationRequest", @selector(threadIdentifier),
                  (IMP)&hook_threadIdentifier, (IMP*)&orig_threadIdentifier);
@@ -63,17 +66,32 @@ static NSUInteger hook_dynamicGroupingThreshold(id self, SEL _cmd) {
                  (IMP)&hook_collapsingThreshold, (IMP*)&orig_collapsingThreshold);
     ndh_try_hook("NCNotificationStructuredSectionList", @selector(dynamicGroupingThreshold),
                  (IMP)&hook_dynamicGroupingThreshold, (IMP*)&orig_dynamicGroupingThreshold);
+    // Feature 2 (never hide): block the incoming -> history + hide migration
+    // entry point (safe single-arg action method, not the fragile 9-arg one).
+    ndh_try_hook("NCNotificationMasterList",
+                 @selector(migrateNotificationsFromIncomingSectionToHistorySectionAndHideHistorySection:),
+                 (IMP)&hook_migrateToHistory, NULL);
 }
 
 // --- Feature 2: never hide (rewritten from OneNotificationListFFS, iOS 16 names) ---
 
-%hook NCNotificationMasterList
-// Block incoming -> history migration: notifications never move to the hidden
-// history section, so they stay visible. (iOS 16's 9-arg variant of the
-// method KeepItSimple hooked as a 2-arg version on iOS 13-15.)
-- (void)_migrateNotificationsFromList:(id)arg1 toList:(id)arg2 passingTest:(id)arg3 filterRequestsPassingTest:(id)arg4 hideToList:(BOOL)arg5 clearRequests:(BOOL)arg6 filterForDestination:(id)arg7 animateRemoval:(BOOL)arg8 reorderGroupNotifications:(BOOL)arg9 {
-    // intentionally empty: keep everything where it is.
+// The primary path Apple uses to move incoming notifications into the hidden
+// "history" section (and hide that section) when Notification Center is
+// dismissed. We block ONLY this single-argument entry point.
+//
+// NOTE: we deliberately do NOT hook the inner 9-arg
+// _migrateNotificationsFromList:toList:passingTest:… method. That private
+// method returns an object on iOS 16; declaring it as a `void` override left a
+// garbage return value that the caller retained via objc_storeStrong and
+// crashed SpringBoard (EXC_BAD_ACCESS -> Safe Mode, see 1.0.36). The 1-arg
+// "…AndHideHistorySection:" action method is void/BOOL-returning and safe to
+// swallow. The hide blockers + hasVisibleContentToReveal below add defense in
+// depth so notifications stay visible even if a secondary migration path fires.
+static void hook_migrateToHistory(id self, SEL _cmd, BOOL arg1) {
+    // intentionally empty: never migrate to history, never hide.
 }
+
+%hook NCNotificationMasterList
 // Tell the system there is always visible content, so it never collapses/hides
 // the list.
 - (BOOL)hasVisibleContentToReveal { return YES; }
