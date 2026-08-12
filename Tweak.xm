@@ -5,7 +5,7 @@
 //
 // iOS default behaviour: up to 4 notifications are shown individually, the
 // 5th collapses into one grouped bar.
-// This tweak: only kMaxVisible (1) is shown individually, so the 2nd
+// This tweak: only kCollapseThreshold (1) is shown individually, so the 2nd
 // notification already merges into the same grouped bar.
 //
 // Diagnostics: every hook writes to /var/jb/tmp/NotifsDontHide.log so you can
@@ -22,7 +22,7 @@
 
 // Number of notifications shown individually before the rest collapse into the
 // single merged group bar. 1 => "2nd notification merges into the bar".
-static const NSUInteger kMaxVisible = 1;
+static const NSUInteger kCollapseThreshold = 1;
 
 // Optional app scoping. nil / empty => apply to ALL apps.
 // To scope to WeChat only, set: @[ @"com.tencent.xin" ]
@@ -122,9 +122,8 @@ static void ndh_introspect(void) {
 
 // ---- original + replacement function pointers ----
 static id (*orig_threadIdentifier)(id, SEL);
-static NSUInteger (*orig_maxVisibleSection)(id, SEL);
-static NSUInteger (*orig_maxVisibleSettings)(id, SEL);
-static NSInteger (*orig_groupingSetting)(id, SEL);
+static NSUInteger (*orig_collapsingThreshold)(id, SEL);
+static NSUInteger (*orig_dynamicGroupingThreshold)(id, SEL);
 
 // Force every notification of an app to share one thread => one group bar.
 static id hook_threadIdentifier(id self, SEL _cmd) {
@@ -139,45 +138,42 @@ static id hook_threadIdentifier(id self, SEL _cmd) {
     return orig_threadIdentifier(self, _cmd);
 }
 
-// Limit how many individual cards are shown before the rest collapse.
-static NSUInteger hook_maxVisibleSection(id self, SEL _cmd) {
-    ndh_log(@"maximumNumberOfVisibleNotifications(section) -> %lu", (unsigned long)kMaxVisible);
-    return kMaxVisible;
+// iOS 16 real lever: how many requests accumulate in a collapsing queue before
+// they merge into one collapsed "bar". Default is 4 (=> the 5th merges). Return
+// kCollapseThreshold (1) so the 2nd notification already merges.
+static NSUInteger hook_collapsingThreshold(id self, SEL _cmd) {
+    ndh_log(@"collapsingThreshold -> %lu (force 2nd-merge)", (unsigned long)kCollapseThreshold);
+    return kCollapseThreshold;
 }
 
-static NSUInteger hook_maxVisibleSettings(id self, SEL _cmd) {
-    ndh_log(@"maximumNumberOfVisibleNotifications(settings) -> %lu", (unsigned long)kMaxVisible);
-    return kMaxVisible;
-}
-
-// 2 == "By App": every notification of the app goes into one group.
-static NSInteger hook_groupingSetting(id self, SEL _cmd) {
-    ndh_log(@"notificationGroupingSetting -> 2 (By App)");
-    return 2;
+// iOS 16 backup lever: dynamic grouping threshold on the section list. Lower it
+// so grouping kicks in immediately, alongside collapsingThreshold.
+static NSUInteger hook_dynamicGroupingThreshold(id self, SEL _cmd) {
+    ndh_log(@"dynamicGroupingThreshold -> %lu (force 2nd-merge)", (unsigned long)kCollapseThreshold);
+    return kCollapseThreshold;
 }
 
 %ctor {
-    ndh_log(@"=== NotifsDontHide 1.0.33 loaded ===");
+    ndh_log(@"=== NotifsDontHide 1.0.34 loaded ===");
 
+    // (1) Force every app's notifications onto one thread => one group, so the
+    // collapsing queue treats them as one collapsible set.
     ndh_hook(objc_getClass("NCNotificationRequest"),
              @selector(threadIdentifier),
              (IMP)&hook_threadIdentifier,
              (IMP*)&orig_threadIdentifier);
 
-    ndh_hook(objc_getClass("NCNotificationListSection"),
-             @selector(maximumNumberOfVisibleNotifications),
-             (IMP)&hook_maxVisibleSection,
-             (IMP*)&orig_maxVisibleSection);
+    // (2) iOS 16 real lever: collapse after kCollapseThreshold requests.
+    ndh_hook(objc_getClass("NCNotificationCollapsingQueue"),
+             @selector(collapsingThreshold),
+             (IMP)&hook_collapsingThreshold,
+             (IMP*)&orig_collapsingThreshold);
 
-    ndh_hook(objc_getClass("NCNotificationSectionSettings"),
-             @selector(maximumNumberOfVisibleNotifications),
-             (IMP)&hook_maxVisibleSettings,
-             (IMP*)&orig_maxVisibleSettings);
-
-    ndh_hook(objc_getClass("NCNotificationSectionSettings"),
-             @selector(notificationGroupingSetting),
-             (IMP)&hook_groupingSetting,
-             (IMP*)&orig_groupingSetting);
+    // (3) iOS 16 backup lever: dynamic grouping threshold.
+    ndh_hook(objc_getClass("NCNotificationStructuredSectionList"),
+             @selector(dynamicGroupingThreshold),
+             (IMP)&hook_dynamicGroupingThreshold,
+             (IMP*)&orig_dynamicGroupingThreshold);
 
     // Runtime introspection: dump the real iOS 16 class/method names that
     // control the visible-count threshold, so we can hook them correctly.
