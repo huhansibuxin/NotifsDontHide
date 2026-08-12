@@ -80,8 +80,9 @@ static void ndh_introspect_and_instrument(void);
                  (IMP)&hook_collapsingThreshold, (IMP*)&orig_collapsingThreshold);
     ndh_try_hook("NCNotificationStructuredSectionList", @selector(dynamicGroupingThreshold),
                  (IMP)&hook_dynamicGroupingThreshold, (IMP*)&orig_dynamicGroupingThreshold);
-    // Feature 2 (never hide): debug flag + block BOTH migration entry points.
+    // Feature 2 (never hide): debug flag + block every migration/hide path.
     g_ndh_debug = [[NSFileManager defaultManager] fileExistsAtPath:@"/var/jb/tmp/ndh_debug"];
+    // (a) Data-migration entry points: move incoming -> hidden history section.
     // Primary lock/unlock + NC-dismiss migration path (0-arg).
     ndh_try_hook("NCNotificationMasterList",
                  @selector(migrateNotificationsFromIncomingSectionToHistorySection),
@@ -89,6 +90,27 @@ static void ndh_introspect_and_instrument(void);
     // The "…AndHideHistorySection:" variant (1-arg) — also blocked.
     ndh_try_hook("NCNotificationMasterList",
                  @selector(migrateNotificationsFromIncomingSectionToHistorySectionAndHideHistorySection:),
+                 (IMP)&hook_blockMigration, NULL);
+    // Scheduled migration (timer-driven, the likely lock/unlock "on schedule"
+    // path) and digest dissolve — insurance so nothing reaches the history list.
+    ndh_try_hook("NCNotificationMasterList",
+                 @selector(_migrateOnScheduleNotificationRequestsFromIncomingSectionToHistorySection:),
+                 (IMP)&hook_blockMigration, NULL);
+    ndh_try_hook("NCNotificationMasterList",
+                 @selector(_dissolveCurrentDigestSectionListToHistorySection),
+                 (IMP)&hook_blockMigration, NULL);
+    // (b) Visual-collapse path (the actual "slide into history and disappear").
+    // 1.0.39 only blocked the data migration above, but iOS 16 still runs the
+    // per-layout visibility sync that animates the incoming cards into the
+    // hidden history state. Blocking these void toggle methods freezes the
+    // digest/history visibility in its default (visible) state. Verified on
+    // device: these three fire 266x each during a lock/unlock + NC open/close
+    // cycle, dwarfing every other method.
+    ndh_try_hook("NCNotificationMasterList",
+                 @selector(_toggleCurrentDigestSectionListVisibilityInHistorySection),
+                 (IMP)&hook_blockMigration, NULL);
+    ndh_try_hook("NCNotificationMasterList",
+                 @selector(_toggleVisibilityInHistorySectionListForSectionList:atIndex:isSectionHidden:animated:),
                  (IMP)&hook_blockMigration, NULL);
     // Debug-only instrumentation to find any migration/hide path we missed.
     if (g_ndh_debug) ndh_introspect_and_instrument();
@@ -193,6 +215,11 @@ static void ndh_introspect_and_instrument(void) {
 // Tell the system there is always visible content, so it never collapses/hides
 // the list.
 - (BOOL)hasVisibleContentToReveal { return YES; }
+// Force the notification history to be allowed to reveal (so previously hidden
+// messages show on the first tap instead of needing several taps to page in).
+- (BOOL)shouldAllowNotificationHistoryReveal { return YES; }
+- (BOOL)notificationListRevealCoordinatorShouldAllowReveal:(id)coordinator { return YES; }
+- (BOOL)notificationListRevealCoordinatorShouldAllowRevealTransition:(id)coordinator { return YES; }
 %end
 
 %hook NCNotificationStructuredSectionList
