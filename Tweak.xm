@@ -86,13 +86,22 @@ static void ndh_introspect_and_instrument(void);
 // fails ("Invalid argument structure in %orig") on this method, so we hook the
 // setters with typed IMPs and always call the original with YES. The getters
 // below are overridden in the %hook block to also return YES (belt-and-suspenders).
+static BOOL ndh_revealCoordinatorHasContent(id self) {
+    if (![self respondsToSelector:@selector(_revealSectionHasContent)]) return NO;
+    return ((BOOL (*)(id, SEL))objc_msgSend)(self, @selector(_revealSectionHasContent));
+}
+
 static void (*orig_setForceRevealed)(id, SEL, BOOL);
 static void hook_setForceRevealed(id self, SEL _cmd, BOOL revealed) {
-    if (orig_setForceRevealed) orig_setForceRevealed(self, _cmd, YES);
+    if (!orig_setForceRevealed) return;
+    // Only reveal when history actually has content; revealing an empty
+    // history section makes iOS show the "No Older Notifications" hint.
+    orig_setForceRevealed(self, _cmd, ndh_revealCoordinatorHasContent(self) ? YES : NO);
 }
 static void (*orig_setSectionRevealed)(id, SEL, BOOL);
 static void hook_setSectionRevealed(id self, SEL _cmd, BOOL revealed) {
-    if (orig_setSectionRevealed) orig_setSectionRevealed(self, _cmd, YES);
+    if (!orig_setSectionRevealed) return;
+    orig_setSectionRevealed(self, _cmd, ndh_revealCoordinatorHasContent(self) ? YES : NO);
 }
 
 %ctor {
@@ -201,14 +210,16 @@ static void ndh_introspect_and_instrument(void) {
 %end
 
 %hook NCNotificationListRevealCoordinator
-// 1.0.42: the real "history hidden/collapsed" mechanism. iOS 16 keeps a
-// separate "hidden" (history) list at the bottom of Notification Center that is
-// collapsed by default. forceRevealed is the dedicated "keep it revealed" lever;
-// sectionRevealed is the per-section revealed state. Forcing both YES keeps
-// migrated notifications visible instead of collapsing into the hidden history.
-// The two shouldAllow* gates permit the reveal (trivial safe BOOLs).
-- (BOOL)isForceRevealed { return YES; }
-- (BOOL)isSectionRevealed { return YES; }
+// 1.0.45: force the history section to be revealed ONLY when it actually has
+// content. iOS 16's NCNotificationListRevealCoordinator controls the hidden
+// (history) list at the bottom of Notification Center. If we force it revealed
+// while empty, iOS shows the "No Older Notifications" hint; by returning the
+// coordinator's own _revealSectionHasContent state, the history list is
+// expanded only after notifications have migrated into it (lock->unlock), so
+// they stay visible without an empty hint. The two shouldAllow* gates permit
+// the reveal (trivial safe BOOLs).
+- (BOOL)isForceRevealed { return ndh_revealCoordinatorHasContent(self); }
+- (BOOL)isSectionRevealed { return ndh_revealCoordinatorHasContent(self); }
 - (BOOL)_shouldAllowNotificationListReveal { return YES; }
 - (BOOL)_shouldAllowNotificationListRevealTransition { return YES; }
 %end
