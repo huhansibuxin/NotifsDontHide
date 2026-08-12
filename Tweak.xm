@@ -188,9 +188,9 @@ static void ndh_introspect_and_instrument(void) {
 // sectionRevealed is the per-section revealed state. Forcing both YES keeps
 // migrated notifications visible instead of collapsing into the hidden history.
 // The two shouldAllow* gates permit the reveal (trivial safe BOOLs).
-- (void)setForceRevealed:(BOOL)revealed { %orig(YES); }
+- (void)setForceRevealed:(BOOL)revealed { %orig((BOOL)1); }
 - (BOOL)isForceRevealed { return YES; }
-- (void)setSectionRevealed:(BOOL)revealed { %orig(YES); }
+- (void)setSectionRevealed:(BOOL)revealed { %orig((BOOL)1); }
 - (BOOL)isSectionRevealed { return YES; }
 - (BOOL)_shouldAllowNotificationListReveal { return YES; }
 - (BOOL)_shouldAllowNotificationListRevealTransition { return YES; }
