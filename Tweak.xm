@@ -112,6 +112,20 @@ static void ndh_introspect_and_instrument(void);
     ndh_try_hook("NCNotificationMasterList",
                  @selector(_toggleVisibilityInHistorySectionListForSectionList:atIndex:isSectionHidden:animated:),
                  (IMP)&hook_blockMigration, NULL);
+    // (c) The REAL data-migration executor. Live Frida trace on 1.0.40 proved
+    // the 0/1-arg MasterList entry points blocked in (a) fire but are NOT what
+    // actually moves notifications into the hidden history — the move runs
+    // through the 9-arg low-level mover
+    // -[_migrateNotificationsFromList:toList:…] (fires on lock/unlock + NC
+    // open/close). This is the only method that actually moves requests
+    // between lists, so swallowing it (void-returning, enc=v…, verified) stops
+    // notifications ever leaving the visible incoming section. Matches the
+    // proven KeepItSimple approach (it returns from this exact method).
+    // The 1.0.36 crash came from a MISMATCHED Logos %hook signature, NOT from
+    // void-swallowing — a variadic void IMP is safe here.
+    ndh_try_hook("NCNotificationMasterList",
+                 @selector(_migrateNotificationsFromList:toList:passingTest:filterRequestsPassingTest:hideToList:clearRequests:filterForDestination:animateRemoval:reorderGroupNotifications:),
+                 (IMP)&hook_blockMigration, NULL);
     // Debug-only instrumentation to find any migration/hide path we missed.
     if (g_ndh_debug) ndh_introspect_and_instrument();
 }
