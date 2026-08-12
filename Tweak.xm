@@ -5,14 +5,27 @@
 //   after the 1st, so the 2nd notification already merges into one bar.
 //
 // Feature 2 — never hide in Notification Center:
-//   iOS migrates incoming notifications into a "history" section and hides
-//   that section (and hides grouped notifications on device re-auth). We
-//   block the migration and the hide calls so everything stays visible.
+//   On iOS 16, when you unlock (or notifications age out) SpringBoard migrates
+//   incoming lock-screen notifications into a "history" section and then
+//   COLLAPSES that section (hidden by default — you must tap "Show History").
 //
-// This single tweak replaces the old split design (NotifsDontHide + the
-// bundled OneNotificationListFFS.dylib). The "never hide" logic was
-// reverse-engineered from OneNotificationListFFS and rewritten here against
-// the real iOS 16 method names (verified on-device).
+//   We do NOT block the migration. Blocking it (1.0.41) DESTROYED the
+//   notifications entirely: on unlock the lock-screen list is torn down, and
+//   the only thing that keeps them alive is the migration into history (the
+//   9-arg NCNotificationMasterList mover is the real executor). With migration
+//   blocked, the notifications were dropped — gone from both lock screen and
+//   history.
+//
+//   So: let the migration run (notifications survive unlock), then FORCE the
+//   history section to stay revealed via NCNotificationListRevealCoordinator
+//   (forceRevealed / sectionRevealed) so migrated notifications remain visible
+//   instead of collapsing into the hidden history.
+//
+//   The older (1.0.39/1.0.40) "block the visual-collapse toggle" approach was
+//   also wrong: those _toggleVisibility… calls are what REVEAL the section, so
+//   swallowing them froze it in the hidden state. We no longer touch them.
+//
+// Reverse-engineered from on-device Frida introspection (iOS 16, verified).
 
 #import <Foundation/Foundation.h>
 #import <substrate.h>
@@ -59,18 +72,13 @@ static NSUInteger hook_dynamicGroupingThreshold(id self, SEL _cmd) {
 }
 
 // Debug flag (loaded once in %ctor): if /var/jb/tmp/ndh_debug exists, the
-// migration/hide blockers also log which method fired, so we can see any
+// instrumentation below enumerates notification classes and safely swallows
+// migrate/hide/History void methods, logging when they fire, so we can see any
 // migration path we missed. Off in production (zero overhead).
 static BOOL g_ndh_debug = NO;
 static void ndh_debug_log(NSString *fmt, ...);
-// Shared swallow IMP for the migration/hide entry points: variadic so it never
-// assumes the (private) argument layout, and void-returning because these
-// action methods return void (verified: 1.0.37's void override did not crash).
-static void hook_blockMigration(id self, SEL _cmd, ...);
-// Debug-only: enumerate notification list/section/master/reveal/coordinator
-// classes and list (method name + type encoding) every migrate/hide/reveal/
-// visible candidate, then safely swallow the void-returning, no-exotic-arg
-// ones and log when they fire. Used to find the migration/hide path we missed.
+static void ndh_trace_swallow(id self, SEL _cmd, ...);
+static BOOL ndh_enc_safe_to_swallow(const char *enc);
 static void ndh_introspect_and_instrument(void);
 
 %ctor {
@@ -80,57 +88,15 @@ static void ndh_introspect_and_instrument(void);
                  (IMP)&hook_collapsingThreshold, (IMP*)&orig_collapsingThreshold);
     ndh_try_hook("NCNotificationStructuredSectionList", @selector(dynamicGroupingThreshold),
                  (IMP)&hook_dynamicGroupingThreshold, (IMP*)&orig_dynamicGroupingThreshold);
-    // Feature 2 (never hide): debug flag + block every migration/hide path.
+    // Feature 2 (never hide): debug flag only. No migration/hide blocks — the
+    // migration is required for notifications to survive unlock; we keep them
+    // visible by forcing the history section revealed (see the
+    // NCNotificationListRevealCoordinator hook below).
     g_ndh_debug = [[NSFileManager defaultManager] fileExistsAtPath:@"/var/jb/tmp/ndh_debug"];
-    // (a) Data-migration entry points: move incoming -> hidden history section.
-    // Primary lock/unlock + NC-dismiss migration path (0-arg).
-    ndh_try_hook("NCNotificationMasterList",
-                 @selector(migrateNotificationsFromIncomingSectionToHistorySection),
-                 (IMP)&hook_blockMigration, NULL);
-    // The "…AndHideHistorySection:" variant (1-arg) — also blocked.
-    ndh_try_hook("NCNotificationMasterList",
-                 @selector(migrateNotificationsFromIncomingSectionToHistorySectionAndHideHistorySection:),
-                 (IMP)&hook_blockMigration, NULL);
-    // Scheduled migration (timer-driven, the likely lock/unlock "on schedule"
-    // path) and digest dissolve — insurance so nothing reaches the history list.
-    ndh_try_hook("NCNotificationMasterList",
-                 @selector(_migrateOnScheduleNotificationRequestsFromIncomingSectionToHistorySection:),
-                 (IMP)&hook_blockMigration, NULL);
-    ndh_try_hook("NCNotificationMasterList",
-                 @selector(_dissolveCurrentDigestSectionListToHistorySection),
-                 (IMP)&hook_blockMigration, NULL);
-    // (b) Visual-collapse path (the actual "slide into history and disappear").
-    // 1.0.39 only blocked the data migration above, but iOS 16 still runs the
-    // per-layout visibility sync that animates the incoming cards into the
-    // hidden history state. Blocking these void toggle methods freezes the
-    // digest/history visibility in its default (visible) state. Verified on
-    // device: these three fire 266x each during a lock/unlock + NC open/close
-    // cycle, dwarfing every other method.
-    ndh_try_hook("NCNotificationMasterList",
-                 @selector(_toggleCurrentDigestSectionListVisibilityInHistorySection),
-                 (IMP)&hook_blockMigration, NULL);
-    ndh_try_hook("NCNotificationMasterList",
-                 @selector(_toggleVisibilityInHistorySectionListForSectionList:atIndex:isSectionHidden:animated:),
-                 (IMP)&hook_blockMigration, NULL);
-    // (c) The REAL data-migration executor. Live Frida trace on 1.0.40 proved
-    // the 0/1-arg MasterList entry points blocked in (a) fire but are NOT what
-    // actually moves notifications into the hidden history — the move runs
-    // through the 9-arg low-level mover
-    // -[_migrateNotificationsFromList:toList:…] (fires on lock/unlock + NC
-    // open/close). This is the only method that actually moves requests
-    // between lists, so swallowing it (void-returning, enc=v…, verified) stops
-    // notifications ever leaving the visible incoming section. Matches the
-    // proven KeepItSimple approach (it returns from this exact method).
-    // The 1.0.36 crash came from a MISMATCHED Logos %hook signature, NOT from
-    // void-swallowing — a variadic void IMP is safe here.
-    ndh_try_hook("NCNotificationMasterList",
-                 @selector(_migrateNotificationsFromList:toList:passingTest:filterRequestsPassingTest:hideToList:clearRequests:filterForDestination:animateRemoval:reorderGroupNotifications:),
-                 (IMP)&hook_blockMigration, NULL);
-    // Debug-only instrumentation to find any migration/hide path we missed.
     if (g_ndh_debug) ndh_introspect_and_instrument();
 }
 
-// --- Feature 2: never hide (rewritten from OneNotificationListFFS, iOS 16 names) ---
+// --- Feature 2: never hide (iOS 16 names, verified on-device) ---
 
 // Debug logger (gated by g_ndh_debug). Injected dylib NSLog is NOT captured by
 // oslog on this setup, so we append to a file instead.
@@ -143,26 +109,6 @@ static void ndh_debug_log(NSString *fmt, ...) {
     FILE *f = fopen([path UTF8String], "a");
     if (f) { fprintf(f, "%s\n", [msg UTF8String]); fclose(f); }
 }
-
-// The primary path Apple uses to move incoming notifications into the hidden
-// "history" section (and hide that section) on lock/unlock and NC dismiss is
-// -[NCNotificationMasterList migrateNotificationsFromIncomingSectionToHistorySection]
-// (0-arg) and its "…AndHideHistorySection:" (1-arg) variant. Both are void
-// action methods; we swallow them so notifications never leave the visible
-// incoming section.
-//
-// NOTE: we deliberately do NOT hook the inner 9-arg
-// _migrateNotificationsFromList:toList:passingTest:… method. That private
-// method returns an object on iOS 16; declaring it as a `void` override left a
-// garbage return value that the caller retained via objc_storeStrong and
-// crashed SpringBoard (EXC_BAD_ACCESS -> Safe Mode, see 1.0.36). Using a
-// variadic IMP here also avoids ever assuming the private argument layout.
-static void hook_blockMigration(id self, SEL _cmd, ...) {
-    ndh_debug_log(@"[NDH] blocked migration/hide: %@", NSStringFromSelector(_cmd));
-    // intentionally empty: never migrate to history, never hide.
-}
-
-// --- Debug-only instrumentation (gated by g_ndh_debug) ---
 
 // Log a fired method call (used by the trace swallow below).
 static void ndh_trace_swallow(id self, SEL _cmd, ...) {
@@ -227,13 +173,33 @@ static void ndh_introspect_and_instrument(void) {
 
 %hook NCNotificationMasterList
 // Tell the system there is always visible content, so it never collapses/hides
-// the list.
+// the list, and permit the history to be revealed (the reveal is then forced
+// ON by the NCNotificationListRevealCoordinator hook below).
 - (BOOL)hasVisibleContentToReveal { return YES; }
-// Force the notification history to be allowed to reveal (so previously hidden
-// messages show on the first tap instead of needing several taps to page in).
 - (BOOL)shouldAllowNotificationHistoryReveal { return YES; }
 - (BOOL)notificationListRevealCoordinatorShouldAllowReveal:(id)coordinator { return YES; }
 - (BOOL)notificationListRevealCoordinatorShouldAllowRevealTransition:(id)coordinator { return YES; }
+%end
+
+%hook NCNotificationListRevealCoordinator
+// 1.0.42: the real "history hidden/collapsed" mechanism. iOS 16 keeps a
+// separate "hidden" (history) list at the bottom of Notification Center that is
+// collapsed by default. forceRevealed is the dedicated "keep it revealed" lever;
+// sectionRevealed is the per-section revealed state. Forcing both YES keeps
+// migrated notifications visible instead of collapsing into the hidden history.
+// The two shouldAllow* gates permit the reveal (trivial safe BOOLs).
+- (void)setForceRevealed:(BOOL)revealed { %orig(YES); }
+- (BOOL)isForceRevealed { return YES; }
+- (void)setSectionRevealed:(BOOL)revealed { %orig(YES); }
+- (BOOL)isSectionRevealed { return YES; }
+- (BOOL)_shouldAllowNotificationListReveal { return YES; }
+- (BOOL)_shouldAllowNotificationListRevealTransition { return YES; }
+%end
+
+%hook NCNotificationListInteractiveTransitionCoordinator
+// Secondary insurance: report the hidden (history) list as already revealed so
+// no interactive collapse transition can hide it. BOOL getter — safe to force.
+- (BOOL)_isHiddenListRevealed { return YES; }
 %end
 
 %hook NCNotificationStructuredSectionList
