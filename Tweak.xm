@@ -13,6 +13,8 @@
 
 #import <Foundation/Foundation.h>
 #import <stdarg.h>
+#import <string.h>
+#import <stdlib.h>
 #import <substrate.h>
 #import <objc/runtime.h>
 
@@ -77,6 +79,47 @@ static void ndh_hook(Class cls, SEL sel, IMP imp, IMP *orig) {
     MSHookMessageEx(cls, sel, imp, orig);
 }
 
+// ---- introspection (only logs when debug flag is on) ----
+static int nd_ci_strstr(const char *hay, const char *needle) {
+    if (!hay || !needle) return 0;
+    while (*hay) {
+        const char *h = hay, *n = needle;
+        while (*h && *n && (tolower((unsigned char)*h) == tolower((unsigned char)*n))) { h++; n++; }
+        if (*n == 0) return 1;
+        hay++;
+    }
+    return 0;
+}
+
+static void ndh_introspect(void) {
+    ndh_log(@"=== introspect begin ===");
+    int n = objc_getClassList(NULL, 0);
+    if (n <= 0) { ndh_log(@"no classes"); return; }
+    Class *all = (Class *)malloc(sizeof(Class) * n);
+    objc_getClassList(all, n);
+    for (int i = 0; i < n; i++) {
+        const char *name = class_getName(all[i]);
+        if (name && strstr(name, "NCNotification")) {
+            ndh_log(@"CLASS: %s", name);
+            unsigned count = 0;
+            Method *methods = class_copyMethodList(all[i], &count);
+            for (unsigned j = 0; j < count; j++) {
+                const char *m = sel_getName(method_getName(methods[j]));
+                // Flag methods likely related to the visible-count threshold.
+                if (nd_ci_strstr(m, "visible") || nd_ci_strstr(m, "maximum") ||
+                    nd_ci_strstr(m, "group") || nd_ci_strstr(m, "limit") ||
+                    nd_ci_strstr(m, "collaps") || nd_ci_strstr(m, "expan") ||
+                    nd_ci_strstr(m, "count")) {
+                    ndh_log(@"    >> %s", m);
+                }
+            }
+            free(methods);
+        }
+    }
+    free(all);
+    ndh_log(@"=== introspect end ===");
+}
+
 // ---- original + replacement function pointers ----
 static id (*orig_threadIdentifier)(id, SEL);
 static NSUInteger (*orig_maxVisibleSection)(id, SEL);
@@ -114,7 +157,7 @@ static NSInteger hook_groupingSetting(id self, SEL _cmd) {
 }
 
 %ctor {
-    ndh_log(@"=== NotifsDontHide 1.0.32 loaded ===");
+    ndh_log(@"=== NotifsDontHide 1.0.33 loaded ===");
 
     ndh_hook(objc_getClass("NCNotificationRequest"),
              @selector(threadIdentifier),
@@ -135,6 +178,10 @@ static NSInteger hook_groupingSetting(id self, SEL _cmd) {
              @selector(notificationGroupingSetting),
              (IMP)&hook_groupingSetting,
              (IMP*)&orig_groupingSetting);
+
+    // Runtime introspection: dump the real iOS 16 class/method names that
+    // control the visible-count threshold, so we can hook them correctly.
+    ndh_introspect();
 
     // Keep the bundled won't-hide dylib enabled (do not touch its logic).
     CFPreferencesSetAppValue(CFSTR("enabled"), kCFBooleanTrue,
