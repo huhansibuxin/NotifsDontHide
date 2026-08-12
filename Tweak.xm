@@ -81,6 +81,20 @@ static void ndh_trace_swallow(id self, SEL _cmd, ...);
 static BOOL ndh_enc_safe_to_swallow(const char *enc);
 static void ndh_introspect_and_instrument(void);
 
+// Feature 2 (never hide): force the history (hidden) list revealed via
+// NCNotificationListRevealCoordinator. Logos %orig with a BOOL scalar argument
+// fails ("Invalid argument structure in %orig") on this method, so we hook the
+// setters with typed IMPs and always call the original with YES. The getters
+// below are overridden in the %hook block to also return YES (belt-and-suspenders).
+static void (*orig_setForceRevealed)(id, SEL, BOOL);
+static void hook_setForceRevealed(id self, SEL _cmd, BOOL revealed) {
+    if (orig_setForceRevealed) orig_setForceRevealed(self, _cmd, YES);
+}
+static void (*orig_setSectionRevealed)(id, SEL, BOOL);
+static void hook_setSectionRevealed(id self, SEL _cmd, BOOL revealed) {
+    if (orig_setSectionRevealed) orig_setSectionRevealed(self, _cmd, YES);
+}
+
 %ctor {
     ndh_try_hook("NCNotificationRequest", @selector(threadIdentifier),
                  (IMP)&hook_threadIdentifier, (IMP*)&orig_threadIdentifier);
@@ -88,6 +102,11 @@ static void ndh_introspect_and_instrument(void);
                  (IMP)&hook_collapsingThreshold, (IMP*)&orig_collapsingThreshold);
     ndh_try_hook("NCNotificationStructuredSectionList", @selector(dynamicGroupingThreshold),
                  (IMP)&hook_dynamicGroupingThreshold, (IMP*)&orig_dynamicGroupingThreshold);
+    // Feature 2 (never hide): force the history (hidden) list revealed.
+    ndh_try_hook("NCNotificationListRevealCoordinator", @selector(setForceRevealed:),
+                 (IMP)&hook_setForceRevealed, (IMP*)&orig_setForceRevealed);
+    ndh_try_hook("NCNotificationListRevealCoordinator", @selector(setSectionRevealed:),
+                 (IMP)&hook_setSectionRevealed, (IMP*)&orig_setSectionRevealed);
     // Feature 2 (never hide): debug flag only. No migration/hide blocks — the
     // migration is required for notifications to survive unlock; we keep them
     // visible by forcing the history section revealed (see the
@@ -188,9 +207,7 @@ static void ndh_introspect_and_instrument(void) {
 // sectionRevealed is the per-section revealed state. Forcing both YES keeps
 // migrated notifications visible instead of collapsing into the hidden history.
 // The two shouldAllow* gates permit the reveal (trivial safe BOOLs).
-- (void)setForceRevealed:(BOOL)revealed { %orig((BOOL)1); }
 - (BOOL)isForceRevealed { return YES; }
-- (void)setSectionRevealed:(BOOL)revealed { %orig((BOOL)1); }
 - (BOOL)isSectionRevealed { return YES; }
 - (BOOL)_shouldAllowNotificationListReveal { return YES; }
 - (BOOL)_shouldAllowNotificationListRevealTransition { return YES; }
