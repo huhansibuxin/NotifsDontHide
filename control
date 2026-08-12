@@ -1,6 +1,6 @@
 Package: com.huhansibuxin.notifsdonthide
 Name: NotifsDontHide
-Version: 1.0.38
+Version: 1.0.39
 Architecture: iphoneos-arm64
 Description: Notifications never hide in Notification Center.
 Maintainer: huhansibuxin

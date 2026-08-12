@@ -18,6 +18,7 @@
 #import <substrate.h>
 #import <objc/runtime.h>
 #import <stdarg.h>
+#import <string.h>
 
 // Notifications shown individually before the rest collapse into the single
 // merged group bar. 1 => "2nd notification merges into the bar".
@@ -66,6 +67,11 @@ static void ndh_debug_log(NSString *fmt, ...);
 // assumes the (private) argument layout, and void-returning because these
 // action methods return void (verified: 1.0.37's void override did not crash).
 static void hook_blockMigration(id self, SEL _cmd, ...);
+// Debug-only: enumerate notification list/section/master/reveal/coordinator
+// classes and list (method name + type encoding) every migrate/hide/reveal/
+// visible candidate, then safely swallow the void-returning, no-exotic-arg
+// ones and log when they fire. Used to find the migration/hide path we missed.
+static void ndh_introspect_and_instrument(void);
 
 %ctor {
     ndh_try_hook("NCNotificationRequest", @selector(threadIdentifier),
@@ -84,6 +90,8 @@ static void hook_blockMigration(id self, SEL _cmd, ...);
     ndh_try_hook("NCNotificationMasterList",
                  @selector(migrateNotificationsFromIncomingSectionToHistorySectionAndHideHistorySection:),
                  (IMP)&hook_blockMigration, NULL);
+    // Debug-only instrumentation to find any migration/hide path we missed.
+    if (g_ndh_debug) ndh_introspect_and_instrument();
 }
 
 // --- Feature 2: never hide (rewritten from OneNotificationListFFS, iOS 16 names) ---
@@ -116,6 +124,69 @@ static void ndh_debug_log(NSString *fmt, ...) {
 static void hook_blockMigration(id self, SEL _cmd, ...) {
     ndh_debug_log(@"[NDH] blocked migration/hide: %@", NSStringFromSelector(_cmd));
     // intentionally empty: never migrate to history, never hide.
+}
+
+// --- Debug-only instrumentation (gated by g_ndh_debug) ---
+
+// Log a fired method call (used by the trace swallow below).
+static void ndh_trace_swallow(id self, SEL _cmd, ...) {
+    ndh_debug_log(@"[NDH-TRACE] fired %@ on %@", NSStringFromSelector(_cmd), NSStringFromClass([self class]));
+}
+
+// A method is safe to swallow with a variadic void IMP only if it returns void
+// AND has no float/double/struct/union/array arguments (those shift register
+// layout and would crash). Returning an object + void override = EXC_BAD_ACCESS
+// (the 1.0.36 bug), so we reject non-void returns outright.
+static BOOL ndh_enc_safe_to_swallow(const char *enc) {
+    if (!enc || enc[0] != 'v') return NO;
+    for (const char *p = enc; *p; p++) {
+        if (*p == 'f' || *p == 'd' || *p == '{' || *p == '(' || *p == '[') return NO;
+    }
+    return YES;
+}
+
+static void ndh_introspect_and_instrument(void) {
+    ndh_debug_log(@"[NDH-INTROSPECT] === begin ===");
+    int count = objc_getClassList(NULL, 0);
+    if (count <= 0) { ndh_debug_log(@"[NDH-INTROSPECT] no classes"); return; }
+    Class *classes = (Class *)malloc((size_t)count * sizeof(Class));
+    if (!classes) return;
+    objc_getClassList(classes, count);
+    for (int i = 0; i < count; i++) {
+        Class c = classes[i];
+        const char *name = class_getName(c);
+        if (!strstr(name, "Notification")) continue;
+        if (!(strstr(name, "List") || strstr(name, "Section") || strstr(name, "Master") ||
+              strstr(name, "Reveal") || strstr(name, "Coordinator") || strstr(name, "Group"))) continue;
+        unsigned int mc = 0;
+        Method *methods = class_copyMethodList(c, &mc);
+        if (!methods) continue;
+        for (unsigned j = 0; j < mc; j++) {
+            SEL sel = method_getName(methods[j]);
+            const char *selname = sel_getName(sel);
+            NSString *s = [NSString stringWithUTF8String:selname];
+            if (![s containsString:@"migrate"] && ![s containsString:@"History"] &&
+                ![s containsString:@"hide"] && ![s containsString:@"reveal"] && ![s containsString:@"Reveal"] &&
+                ![s containsString:@"visible"] && ![s containsString:@"Visible"] &&
+                ![s containsString:@"Missed"] && ![s containsString:@"collapse"] && ![s containsString:@"Collapse"] &&
+                ![s containsString:@"expand"] && ![s containsString:@"show"] && ![s containsString:@"Show"] &&
+                ![s containsString:@"Group"]) continue;
+            const char *enc = method_getTypeEncoding(methods[j]);
+            ndh_debug_log(@"[NDH-INTROSPECT] %s :: %s  enc=%s%s", name, selname, enc ? enc : "?",
+                          ndh_enc_safe_to_swallow(enc) ? "  [SAFE-SWALLOW]" : "");
+            // Only SAFELY swallow the actual migrate/hide/History actions. Never
+            // swallow show/collapse/expand/visible/reveal/Group methods — those
+            // maintain display and (for collapse) the merge feature itself.
+            BOOL isMigrateHide = ([s containsString:@"migrate"] || [s containsString:@"hide"] ||
+                                  [s containsString:@"History"]);
+            if (isMigrateHide && ndh_enc_safe_to_swallow(enc)) {
+                MSHookMessageEx(c, sel, (IMP)&ndh_trace_swallow, NULL);
+            }
+        }
+        free(methods);
+    }
+    free(classes);
+    ndh_debug_log(@"[NDH-INTROSPECT] === end ===");
 }
 
 %hook NCNotificationMasterList
