@@ -6,12 +6,26 @@ on:
 
 jobs:
   build:
+    strategy:
+      matrix:
+        variant: [rootless, roothide]
     runs-on: macos-14
+    env:
+      VARIANT: ${{ matrix.variant }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Setup Theos
+      - name: Setup Theos (Roothide)
+        if: matrix.variant == 'roothide'
+        run: |
+          git clone --recurse-submodules https://github.com/roothide/theos.git ${{ runner.temp }}/theos
+          find ${{ runner.temp }}/theos/bin -name "*.pl" -exec sed -i '' '1s|#!/usr/bin/perl|#!/usr/bin/env perl|' {} \;
+          echo "THEOS=${{ runner.temp }}/theos" >> $GITHUB_ENV
+          echo "THEOS_PACKAGE_SCHEME=roothide" >> $GITHUB_ENV
+
+      - name: Setup Theos (Rootless)
+        if: matrix.variant != 'roothide'
         run: |
           git clone --recurse-submodules https://github.com/theos/theos.git ${{ runner.temp }}/theos
           find ${{ runner.temp }}/theos/bin -name "*.pl" -exec sed -i '' '1s|#!/usr/bin/perl|#!/usr/bin/env perl|' {} \;
@@ -36,12 +50,12 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: NotifsDontHide-rootless
+          name: NotifsDontHide-${{ matrix.variant }}
           path: packages/*.deb
 
       - name: Upload build log
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: NotifsDontHide-buildlog
+          name: NotifsDontHide-buildlog-${{ matrix.variant }}
           path: build.log
