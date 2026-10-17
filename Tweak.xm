@@ -707,8 +707,12 @@ static NSUInteger hook_dynamicGroupingThreshold(id self, SEL _cmd) {
     if (!ONL_ACTIVE) return %orig;
 
     id groupList = onl_groupListForView(view);
-    if (!groupList && [self respondsToSelector:@selector(delegate)]) {
-        id d = onl_send0(self, @selector(delegate));
+    // Logos forward-declares every hooked class (@class Xxx;), so sending an
+    // NSObject message to `self` here fails with "receiver type ... is a
+    // forward declaration". Cast to id first — the 1.0.47 lesson.
+    id me = (id)self;
+    if (!groupList && [me respondsToSelector:@selector(delegate)]) {
+        id d = onl_send0(me, @selector(delegate));
         if (d) groupList = onl_groupListForView(d);
     }
     if (groupList && onl_shouldExpand(groupList)) {
