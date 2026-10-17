@@ -58,6 +58,11 @@
 // IMP checks its orig pointer, and the tap recognizer targets a weak proxy so
 // no group list / recognizer retain cycle can form.
 //
+// Planned: fold into airpods-volume as a per-feature toggle ("always show
+// notifications") next to its existing notification-collapse setting. Do NOT
+// carry the old merge-early feature across — airpods-volume already owns
+// collapse thresholds and two owners for the same queue is a conflict.
+//
 // ============================================================================
 // LOGOS PITFALL — never put a printf format specifier inside a %hook/%ctor block
 // ============================================================================
@@ -103,17 +108,19 @@
 static NSString *const kPrefsAppID = @"com.huhansibuxin.notifsdonthide";
 
 // Master switch for the ONL architecture. Default YES (tweak is on).
+//
+// When this tweak is folded into a host plugin (planned target: airpods-volume)
+// this becomes that plugin's per-feature toggle rather than a standalone pref.
+// airpods-volume already implements its own "collapse after the 2nd
+// notification" behaviour, so the old merge-early feature that used to live
+// here was REMOVED rather than carried over — two independent collapse
+// thresholds fighting over the same queue is exactly the kind of conflict that
+// produced the 1.0.31-1.0.48 failure cascade.
 static BOOL g_enabled = YES;
-// Opt-in legacy Feature 1: collapse after the 1st notification (merge early).
-// OFF by default — ONL's force-expand (E) already yields the single-list
-// effect, and merging everything into one giant group can push the stack past
-// the 160pt guard so it never expands. Flip on only for A/B testing.
-static BOOL g_mergeEarly = NO;
 // iOS version gate: the hook set below is the iOS 16 branch. On any other
 // major version every hook degrades to a pure pass-through.
 static BOOL g_supported = NO;
 
-static const NSUInteger kCollapseThreshold = 1;
 // Stacks whose collapsed view is shorter than this are force-expanded.
 static const CGFloat kExpandHeightLimit = 160.0;
 // Transient "user tapped, expansion allowed" gate lifetime.
@@ -497,41 +504,6 @@ static id onl_groupListForView(id view) {
 }
 
 // ---------------------------------------------------------------------------
-// Legacy Feature 1 (opt-in): merge after the 1st notification.
-//
-// These three are installed with MSHookMessageEx rather than %hook so they can
-// be registered conditionally. That means the orig_* pointers are only valid if
-// the hook actually took — if MSHookMessageEx failed they stay NULL and calling
-// them would jump to address 0. Every call site below therefore checks first.
-// ---------------------------------------------------------------------------
-static id (*orig_threadIdentifier)(id, SEL);
-static id hook_threadIdentifier(id self, SEL _cmd) {
-    if (!g_mergeEarly || !orig_threadIdentifier) {
-        // Feature off, or hook never installed: fall through to a safe answer.
-        if (orig_threadIdentifier) return orig_threadIdentifier(self, _cmd);
-        return onl_send0(self, @selector(sectionIdentifier));
-    }
-    // Force every notification of an app onto one thread => one collapsible
-    // group, so the 2nd notification already merges into the bar.
-    if ([self respondsToSelector:@selector(sectionIdentifier)]) {
-        return onl_send0(self, @selector(sectionIdentifier));
-    }
-    return orig_threadIdentifier(self, _cmd);
-}
-
-static NSUInteger (*orig_collapsingThreshold)(id, SEL);
-static NSUInteger hook_collapsingThreshold(id self, SEL _cmd) {
-    if (!orig_collapsingThreshold) return 4;   // iOS default, safe fallback
-    return g_mergeEarly ? kCollapseThreshold : orig_collapsingThreshold(self, _cmd);
-}
-
-static NSUInteger (*orig_dynamicGroupingThreshold)(id, SEL);
-static NSUInteger hook_dynamicGroupingThreshold(id self, SEL _cmd) {
-    if (!orig_dynamicGroupingThreshold) return 4;   // iOS default, safe fallback
-    return g_mergeEarly ? kCollapseThreshold : orig_dynamicGroupingThreshold(self, _cmd);
-}
-
-// ---------------------------------------------------------------------------
 // Hooks — NCNotificationMasterList (iOS 16 branch)
 // ---------------------------------------------------------------------------
 %hook NCNotificationMasterList
@@ -849,15 +821,6 @@ static void ndh_loadPrefs(void) {
     } else {
         g_enabled = YES;
     }
-
-    v = CFPreferencesCopyAppValue(CFSTR("mergeEarly"),
-                                  (__bridge CFStringRef)kPrefsAppID);
-    if (v) {
-        g_mergeEarly = [(__bridge id)v boolValue];
-        CFRelease(v);
-    } else {
-        g_mergeEarly = NO;
-    }
 }
 
 static void ndh_reloadPrefs(CFNotificationCenterRef center, void *observer,
@@ -970,16 +933,6 @@ static BOOL ndh_installStackTapHandler(void) {
         CFSTR("com.huhansibuxin.notifsdonthide/ReloadPrefs"), NULL,
         CFNotificationSuspensionBehaviorCoalesce);
 
-    // Opt-in legacy Feature 1.
-    ndh_try_hook("NCNotificationRequest", @selector(threadIdentifier),
-                 (IMP)&hook_threadIdentifier, (IMP*)&orig_threadIdentifier);
-    ndh_try_hook("NCNotificationCollapsingQueue", @selector(collapsingThreshold),
-                 (IMP)&hook_collapsingThreshold, (IMP*)&orig_collapsingThreshold);
-    ndh_try_hook("NCNotificationStructuredSectionList",
-                 @selector(dynamicGroupingThreshold),
-                 (IMP)&hook_dynamicGroupingThreshold,
-                 (IMP*)&orig_dynamicGroupingThreshold);
-
     // Argument-rewriting setters — typed IMP (see the note above: Logos %orig
     // cannot rewrite arguments on private methods).
     ndh_try_hook("NCNotificationMasterList",
@@ -1000,7 +953,5 @@ static BOOL ndh_installStackTapHandler(void) {
                  (IMP*)&orig_setShouldAllowNotificationHistoryReveal);
 
     // Tap handler, installed with _class_addMethod (see the note above).
-    if (ndh_installStackTapHandler()) {
-    } else {
-    }
+    ndh_installStackTapHandler();
 }
