@@ -64,6 +64,10 @@
 // strings into Logos blocks.
 //
 // Related, already-burned rules:
+//   * %orig must sit alone on its own line. Never write
+//     "if (x) { %orig; return; }" — Logos expands %orig into a long
+//     _logos_orig$Class$sel$(self, _cmd, ...) call and its parser cannot cope
+//     with that sharing a line with other statements. Same misleading errors.
 //   * %orig(<arg>) cannot rewrite an argument on a private method — use
 //     MSHookMessageEx + typed IMP instead (the 1.0.43/1.0.44 lesson).
 //   * %new generates code that does not compile for these private classes —
@@ -529,8 +533,18 @@ static NSUInteger hook_dynamicGroupingThreshold(id self, SEL _cmd) {
 // the grouped state machine, which it is free to reverse later (scroll away,
 // relock, reauth). By refusing that path we keep control of the expansion.
 - (void)setGrouped:(BOOL)grouped animated:(BOOL)animated {
-    if (!ONL_ACTIVE) { %orig; return; }
-    if (!onl_isMultiGroup(self)) { %orig; return; }
+    // %orig must sit alone on its own line, never inside a single-line
+    // "{ %orig; return; }" — Logos expands it into a long
+    // _logos_orig$...$(self, _cmd, ...) call and its parser cannot handle that
+    // sharing a line with other statements.
+    if (!ONL_ACTIVE) {
+        %orig;
+        return;
+    }
+    if (!onl_isMultiGroup(self)) {
+        %orig;
+        return;
+    }
 
     if (grouped) {
         objc_setAssociatedObject(self, kKeyExpanded, nil,
@@ -559,7 +573,10 @@ static NSUInteger hook_dynamicGroupingThreshold(id self, SEL _cmd) {
 
 // Block the automatic toggle for small stacks — they should stay expanded.
 - (void)toggleGroupedState {
-    if (!ONL_ACTIVE) { %orig; return; }
+    if (!ONL_ACTIVE) {
+        %orig;
+        return;
+    }
     if (onl_shouldExpand(self) && !onl_expansionAllowed(self)) {
         ndh_log(@"[NDH] blocked toggleGroupedState");
         return;
@@ -605,7 +622,10 @@ static NSUInteger hook_dynamicGroupingThreshold(id self, SEL _cmd) {
 // Follow-up to the above: consume the marked tap, otherwise swallow taps on
 // force-expanded stacks so they cannot re-collapse them.
 - (BOOL)handleTapOnNotificationViewController:(id)controller {
-    if (!ONL_ACTIVE) { %orig; return NO; }
+    if (!ONL_ACTIVE) {
+        %orig;
+        return NO;
+    }
 
     id flag = objc_getAssociatedObject(self, kKeyStackTap);
     if ([flag boolValue]) {
