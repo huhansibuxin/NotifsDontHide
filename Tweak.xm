@@ -123,10 +123,11 @@ static const uint64_t kStackTapNS = 300 * NSEC_PER_MSEC;
 
 // Associated-object keys. Unique to this tweak so they can never collide with
 // another tweak's state on the same object.
-static const void *kKeyExpanded      = (const void *)&kKeyExpanded;
-static const void *kKeyExpansionGate = (const void *)&kKeyExpansionGate;
-static const void *kKeyTapRecognizer = (const void *)&kKeyTapRecognizer;
-static const void *kKeyStackTap      = (const void *)&kKeyStackTap;
+static const void *kKeyExpanded       = (const void *)&kKeyExpanded;
+static const void *kKeyExpansionGate  = (const void *)&kKeyExpansionGate;
+static const void *kKeyTapRecognizer  = (const void *)&kKeyTapRecognizer;
+static const void *kKeyStackTap       = (const void *)&kKeyStackTap;
+static const void *kKeyExpandPending  = (const void *)&kKeyExpandPending;
 
 #define ONL_ACTIVE (g_enabled && g_supported)
 
@@ -310,10 +311,24 @@ static void onl_setExpansionGate(id groupList, BOOL on) {
 // Force-expand a stack on the next main-queue turn. Doing this synchronously
 // inside a setter re-enters the list machinery and deadlocks, so it is always
 // deferred — exactly as the original does.
+//
+// Coalesced: at most one pending force-expand per group list. Every call to
+// _handleTapToExpandGroupForNotificationRequest: used to queue its own block,
+// and each block walks orderedRequests calling setCellWithActionsRevealed: on
+// every cell. A burst of triggers (rapid taps, list churn during a notification
+// storm) therefore ran the same cell walk several times back to back on the
+// main thread. The work is idempotent and reads live state at execution time,
+// so dropping the duplicates loses nothing.
 static void onl_forceExpand(id groupList) {
     if (!groupList) return;
+    if (objc_getAssociatedObject(groupList, kKeyExpandPending)) return;
+    objc_setAssociatedObject(groupList, kKeyExpandPending, (id)kCFBooleanTrue,
+                             OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+
     id me = groupList;
     dispatch_async(dispatch_get_main_queue(), ^{
+        objc_setAssociatedObject(me, kKeyExpandPending, nil,
+                                 OBJC_ASSOCIATION_RETAIN_NONATOMIC);
         if (!ONL_ACTIVE) return;
         // Dismiss any revealed swipe actions first, otherwise the expanded
         // stack shows a half-open action row.
@@ -607,16 +622,14 @@ static NSUInteger hook_dynamicGroupingThreshold(id self, SEL _cmd) {
 //
 // Setter only — deliberately NOT the getter. groupListView is read on every
 // layout pass, so hanging an idempotency check off it meant a
-// respondsToSelector + associated-object lookup per read for a one-time
-// setup. If a group list somehow never receives a setGroupListView: call the
-// recognizer is simply absent and taps fall through to the system, which is a
-// graceful degradation rather than a crash.
+// respondsToSelector + associated-object lookup per read for a one-time setup.
+// If a group list somehow never receives a setGroupListView: call, the
+// recognizer is installed later from _handleTapToExpandGroupForNotificationRequest:
+// instead (see below), so the worst case is a slightly later install rather
+// than a permanently dead tap.
 - (void)setGroupListView:(id)groupListView {
     %orig;
     if (ONL_ACTIVE) onl_ensureTapRecognizer(self);
-}
-- (id)groupListView {
-    return %orig;
 }
 
 // Track expansion state. In NCNotificationGroupList, grouped==YES means the
@@ -684,9 +697,14 @@ static NSUInteger hook_dynamicGroupingThreshold(id self, SEL _cmd) {
 // The system's own expand entry point. For small stacks we take over: open the
 // expansion gate, force the expand on the next turn, and skip the original so
 // the system cannot immediately re-collapse us.
+//
+// Also the fallback install point for the tap recognizer: this fires the first
+// time the user interacts with a group, so even if setGroupListView: was never
+// called on it the recognizer still gets wired up here rather than never.
 - (BOOL)_handleTapToExpandGroupForNotificationRequest:(id)request {
     if (!ONL_ACTIVE) return %orig;
     if (onl_shouldExpand(self) && !onl_expansionAllowed(self)) {
+        onl_ensureTapRecognizer(self);
         onl_setExpansionGate(self, YES);
         onl_forceExpand(self);
         objc_setAssociatedObject(self, kKeyExpanded, (id)kCFBooleanTrue,

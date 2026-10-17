@@ -1,6 +1,6 @@
 Package: com.huhansibuxin.notifsdonthide
 Name: NotifsDontHide
-Version: 1.1.1
+Version: 1.1.2
 Architecture: iphoneos-arm64
 Description: Keep Lock Screen notifications in one visible list — rewritten on the OneNotificationListFFS 0.0.2 architecture (block history migration + redirect history requests to the incoming section + force small notification stacks expanded). Logging removed; main-thread-safe and allocation-free on hot paths.
 Maintainer: huhansibuxin
