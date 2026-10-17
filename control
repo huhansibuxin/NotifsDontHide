@@ -1,8 +1,8 @@
 Package: com.huhansibuxin.notifsdonthide
 Name: NotifsDontHide
-Version: 1.0.48
+Version: 1.1.0
 Architecture: iphoneos-arm64
-Description: Notifications never hide in Notification Center.
+Description: Keep Lock Screen notifications in one visible list — rewritten on the OneNotificationListFFS 0.0.2 architecture (block history migration + redirect history requests to the incoming section + force small notification stacks expanded).
 Maintainer: huhansibuxin
 Author: huhansibuxin
 Section: Tweaks

@@ -14,7 +14,7 @@ TWEAK_NAME = NotifsDontHide
 NotifsDontHide_FILES = Tweak.xm
 NotifsDontHide_CFLAGS = -fobjc-arc -w
 NotifsDontHide_LIBRARIES += substrate
-NotifsDontHide_FRAMEWORKS = CoreFoundation
+NotifsDontHide_FRAMEWORKS = CoreFoundation UIKit CoreGraphics
 NotifsDontHide_LOGOSFLAGS += -c generator=MobileSubstrate
 
 include $(THEOS)/makefiles/common.mk
