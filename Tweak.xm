@@ -48,6 +48,28 @@
 // Event-driven only. The only timers are the two one-shot 300ms/800ms gates
 // that clear transient tap state — identical to the original. No polling.
 //
+// ============================================================================
+// LOGOS PITFALL — never put a printf format specifier inside a %hook/%ctor block
+// ============================================================================
+// Logos preprocesses these blocks by scanning for %-prefixed tokens. A bare
+// "%d" or "%@" inside an NSString literal in a block is not a valid directive,
+// and it derails Logos's block/brace tracking. The resulting errors point at
+// the PREPROCESSED output, not your source:
+//     Tweak.xm:527: error: function definition is not allowed here
+//     Tweak.xm:539: error: function definition is not allowed here
+//     Tweak.xm:859: error: expected '}'
+// Those look like a structural brace bug but are not — check for stray format
+// specifiers in log strings inside %hook/%ctor first. Keep printf-style
+// formatting in plain C helper functions (ndh_logBoot) and pass only plain
+// strings into Logos blocks.
+//
+// Related, already-burned rules:
+//   * %orig(<arg>) cannot rewrite an argument on a private method — use
+//     MSHookMessageEx + typed IMP instead (the 1.0.43/1.0.44 lesson).
+//   * %new generates code that does not compile for these private classes —
+//     use _class_addMethod (what the original 0.0.2 binary does).
+// ============================================================================
+//
 // Verified against: /var/jb/Library/MobileSubstrate/DynamicLibraries/
 //                   OneNotificationListFFS.dylib (0.0.2, iphoneos-arm64e)
 // ============================================================================
@@ -409,7 +431,7 @@ static NSUInteger hook_dynamicGroupingThreshold(id self, SEL _cmd) {
 }
 
 - (void)migrateNotificationsFromIncomingSectionToHistorySectionAndHideHistorySection:(BOOL)hide {
-    if (ONL_ACTIVE) { ndh_log(@"[NDH] blocked migrate+hide (%d)", hide); return; }
+    if (ONL_ACTIVE) { ndh_log(@"[NDH] blocked migrate+hide"); return; }
     %orig;
 }
 
@@ -801,6 +823,14 @@ static BOOL ndh_installStackTapHandler(void) {
     return class_addMethod(cls, sel, (IMP)&hook_onl_handleStackGroupTap, "v@:@");
 }
 
+// Boot-time banner. Kept in a plain C function, NOT inline in %ctor: Logos
+// preprocesses %ctor blocks too, and a printf-style format specifier inside one
+// of its blocks breaks its block tracking (see the note above %hook).
+static void ndh_logBoot(NSString *ver, BOOL supported) {
+    ndh_log(@"[NDH] ctor: iOS=%@ supported=%d enabled=%d mergeEarly=%d",
+            ver, supported, g_enabled, g_mergeEarly);
+}
+
 %ctor {
     ndh_loadPrefs();
 
@@ -812,8 +842,7 @@ static BOOL ndh_installStackTapHandler(void) {
     NSComparisonResult cmp17 = [ver compare:@"17.0" options:NSNumericSearch];
     g_supported = (cmp != NSOrderedAscending) && (cmp17 == NSOrderedAscending);
 
-    ndh_log(@"[NDH] ctor: iOS=%@ supported=%d enabled=%d mergeEarly=%d",
-            ver, g_supported, g_enabled, g_mergeEarly);
+    ndh_logBoot(ver, g_supported);
 
     CFNotificationCenterAddObserver(
         CFNotificationCenterGetDarwinNotifyCenter(), NULL,
