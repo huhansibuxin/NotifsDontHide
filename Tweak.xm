@@ -48,6 +48,16 @@
 // Event-driven only. The only timers are the two one-shot 300ms/800ms gates
 // that clear transient tap state — identical to the original. No polling.
 //
+// No logging. Production paths contain no file I/O, no locks, no sleeps and no
+// synchronous network calls, so nothing here can block the main thread. If
+// on-device diagnosis is ever needed again, the gated logger from 1.1.0 is in
+// git history (commit 31ad15e) — but note it cost 3 syscalls per line, which is
+// why it was dropped rather than left switched off.
+//
+// Robustness: every private call is guarded by respondsToSelector:, every typed
+// IMP checks its orig pointer, and the tap recognizer targets a weak proxy so
+// no group list / recognizer retain cycle can form.
+//
 // ============================================================================
 // LOGOS PITFALL — never put a printf format specifier inside a %hook/%ctor block
 // ============================================================================
@@ -59,9 +69,8 @@
 //     Tweak.xm:539: error: function definition is not allowed here
 //     Tweak.xm:859: error: expected '}'
 // Those look like a structural brace bug but are not — check for stray format
-// specifiers in log strings inside %hook/%ctor first. Keep printf-style
-// formatting in plain C helper functions (ndh_logBoot) and pass only plain
-// strings into Logos blocks.
+// specifiers in strings inside %hook/%ctor first. Keep printf-style formatting
+// in plain C helper functions and pass only plain strings into Logos blocks.
 //
 // Related, already-burned rules:
 //   * %orig must sit alone on its own line. Never write
@@ -84,8 +93,6 @@
 #import <substrate.h>
 #import <objc/runtime.h>
 #import <objc/message.h>
-#import <stdarg.h>
-#import <string.h>
 #import <dispatch/dispatch.h>
 
 // ---------------------------------------------------------------------------
@@ -102,8 +109,6 @@ static BOOL g_enabled = YES;
 // effect, and merging everything into one giant group can push the stack past
 // the 160pt guard so it never expands. Flip on only for A/B testing.
 static BOOL g_mergeEarly = NO;
-// Debug log gate: create /var/jb/tmp/ndh_debug to enable. Zero cost when off.
-static BOOL g_debug = NO;
 // iOS version gate: the hook set below is the iOS 16 branch. On any other
 // major version every hook degrades to a pure pass-through.
 static BOOL g_supported = NO;
@@ -124,20 +129,6 @@ static const void *kKeyTapRecognizer = (const void *)&kKeyTapRecognizer;
 static const void *kKeyStackTap      = (const void *)&kKeyStackTap;
 
 #define ONL_ACTIVE (g_enabled && g_supported)
-
-// ---------------------------------------------------------------------------
-// Debug logging — injected dylib NSLog is NOT captured by oslog on this setup,
-// so append to a file instead. Gated by g_debug; production cost is one
-// statically-false branch.
-// ---------------------------------------------------------------------------
-static void ndh_log(NSString *fmt, ...) {
-    if (!g_debug) return;
-    va_list ap; va_start(ap, fmt);
-    NSString *msg = [[NSString alloc] initWithFormat:fmt arguments:ap];
-    va_end(ap);
-    FILE *f = fopen("/var/jb/tmp/NotifsDontHide.log", "a");
-    if (f) { fprintf(f, "%s\n", [msg UTF8String]); fclose(f); }
-}
 
 // ---------------------------------------------------------------------------
 // Safe ObjC helpers. Every private call is guarded by respondsToSelector so a
@@ -174,6 +165,9 @@ static NSUInteger onl_sendUInt0(id obj, SEL sel) {
 // Read an instance variable by name, walking the class hierarchy. This is what
 // makes the tweak survive ivar-offset churn between iOS builds — never hardcode
 // an offset, always resolve the name at runtime.
+//
+// Prefer onl_groupListView() below: this generic walk costs one hash lookup per
+// class in the chain and is only worth paying on cold paths.
 static id onl_ivarValue(id obj, const char *ivarName) {
     if (!obj || !ivarName) return nil;
     Class c = object_getClass(obj);
@@ -183,6 +177,36 @@ static id onl_ivarValue(id obj, const char *ivarName) {
         c = class_getSuperclass(c);
     }
     return nil;
+}
+
+// Resolve the "_groupListView" Ivar ONCE, then reuse it.
+//
+// Why this matters: onl_shouldExpand() runs on every isGrouped: call, which the
+// list machinery fires on every layout pass. The generic ivar walk above costs
+// a class_getInstanceVariable hash lookup per class in the chain
+// (NCNotificationGroupList -> ... -> UIView -> UIResponder -> NSObject, ~5-6
+// lookups) every single time. Caching turns that into one pointer compare.
+//
+// Every call site passes an NCNotificationGroupList (either `self` inside the
+// %hook block, or a value already validated by isKindOfClass:), so a single
+// cache entry is correct. If the ivar is not found the tweak degrades to
+// "never force-expand", which is safe.
+static Ivar onl_groupListViewIvar(void) {
+    static Ivar cached = NULL;
+    static BOOL resolved = NO;
+    if (resolved) return cached;
+
+    resolved = YES;
+    Class c = objc_getClass("NCNotificationGroupList");
+    while (c) {
+        Ivar iv = class_getInstanceVariable(c, "_groupListView");
+        if (iv) {
+            cached = iv;
+            break;
+        }
+        c = class_getSuperclass(c);
+    }
+    return cached;
 }
 
 static BOOL onl_isKindOfClass(id obj, Class cls) {
@@ -195,6 +219,8 @@ static BOOL onl_isKindOfClass(id obj, Class cls) {
 // ---------------------------------------------------------------------------
 
 // A real multi-notification stack: responds to orderedRequests and holds >1.
+// respondsToSelector: is answered from the runtime's per-class cache, so the
+// guard is effectively free; the two message sends that follow are unavoidable.
 static BOOL onl_isMultiGroup(id groupList) {
     if (!groupList) return NO;
     if (![groupList respondsToSelector:@selector(orderedRequests)]) return NO;
@@ -203,14 +229,33 @@ static BOOL onl_isMultiGroup(id groupList) {
     return onl_sendUInt0(reqs, @selector(count)) > 1;
 }
 
-// The group's scroll view, resolved by ivar name (never by offset).
+// The group's scroll view, resolved from the cached Ivar (never by offset).
 static id onl_groupListView(id groupList) {
-    return onl_ivarValue(groupList, "_groupListView");
+    if (!groupList) return nil;
+    Ivar iv = onl_groupListViewIvar();
+    if (!iv) return nil;
+    return object_getIvar(groupList, iv);
+}
+
+// UIScrollView class, resolved once. objc_getClass() is a lookup into the
+// runtime's class table and onl_shouldExpand() runs on every layout pass.
+static Class onl_scrollViewClass(void) {
+    static Class cached = NULL;
+    static BOOL resolved = NO;
+    if (!resolved) {
+        resolved = YES;
+        cached = objc_getClass("UIScrollView");
+    }
+    return cached;
 }
 
 // Whether this stack is small enough that force-expanding it cannot flood the
 // lock screen. Mirrors the original: the collapsed content must fit inside its
 // own frame and stay under the height limit.
+//
+// Runs on every isGrouped: call, so the order of the checks matters: the two
+// cheapest disqualifiers (not a multi-group, no scroll view) come first and
+// short-circuit before any struct-returning message send.
 static BOOL onl_shouldExpand(id groupList) {
     if (!groupList) return NO;
     if (!onl_isMultiGroup(groupList)) return NO;
@@ -218,9 +263,11 @@ static BOOL onl_shouldExpand(id groupList) {
     id listView = onl_groupListView(groupList);
     if (!listView) return NO;
 
-    Class scrollCls = objc_getClass("UIScrollView");
+    Class scrollCls = onl_scrollViewClass();
     if (!scrollCls || !onl_isKindOfClass(listView, scrollCls)) return NO;
 
+    // Both selectors exist on every UIScrollView, so these guards are belt-and-
+    // braces for a future iOS rename rather than a per-call cost.
     if (![listView respondsToSelector:@selector(contentSize)]) return NO;
     if (![listView respondsToSelector:@selector(bounds)]) return NO;
 
@@ -295,20 +342,48 @@ static void onl_forceExpand(id groupList) {
     });
 }
 
+// ---------------------------------------------------------------------------
+// Weak tap target.
+//
+// UIGestureRecognizer retains its target, and addGestureRecognizer: makes the
+// view retain the recognizer. Pointing the recognizer straight at the group
+// list therefore creates a retain cycle: groupList -> recognizer -> groupList.
+// Notification group lists are created and destroyed as notifications arrive,
+// so every one that leaked would accumulate over a session.
+//
+// This proxy breaks the cycle: the group list owns the proxy strongly, and the
+// proxy refers back weakly. When the group list goes away the proxy's target
+// goes nil and the tap becomes a no-op instead of a crash or a leak.
+// ---------------------------------------------------------------------------
+@interface ONLWeakTapTarget : NSObject
+@property (nonatomic, weak) id target;
+@end
+
+@implementation ONLWeakTapTarget
+- (void)onl_forwardTap:(UIGestureRecognizer *)tap {
+    id t = self.target;
+    if (!t) return;
+    if (![t respondsToSelector:@selector(onl_handleStackGroupTap:)]) return;
+    ((void (*)(id, SEL, id))objc_msgSend)(t, @selector(onl_handleStackGroupTap:), tap);
+}
+@end
+
 // Install our tap recognizer on the group list, once. Idempotent.
+//
+// Called from setGroupListView: only — the setter fires once per view
+// assignment, whereas the groupListView getter is read on every layout pass.
+// Putting this on the getter cost a respondsToSelector + associated-object
+// lookup per read for something that only needs to happen once.
 static void onl_ensureTapRecognizer(id groupList) {
     if (!groupList) return;
-    if (!onl_isMultiGroup(groupList)) return;
-
-    // CRASH GUARD: the handler is injected with %new, which Logos silently
-    // skips if the host class was missing at load time. Firing a recognizer at
-    // a selector that was never registered takes SpringBoard down, so verify
-    // the method really exists on this instance before wiring anything up.
+    // Cheapest disqualifier first: if the handler was never registered (host
+    // class missing at load, or _class_addMethod failed) a recognizer firing at
+    // a non-existent selector takes SpringBoard down.
     if (![groupList respondsToSelector:@selector(onl_handleStackGroupTap:)]) {
-        ndh_log(@"[NDH] onl_handleStackGroupTap: missing — recognizer NOT installed");
         return;
     }
     if (objc_getAssociatedObject(groupList, kKeyTapRecognizer)) return;
+    if (!onl_isMultiGroup(groupList)) return;
 
     Class viewCls = objc_getClass("UIView");
     if (!viewCls || !onl_isKindOfClass(groupList, viewCls)) return;
@@ -316,9 +391,14 @@ static void onl_ensureTapRecognizer(id groupList) {
     Class tapCls = objc_getClass("UITapGestureRecognizer");
     if (!tapCls) return;
 
+    // Strong ref on the group list, weak ref back — see ONLWeakTapTarget above.
+    ONLWeakTapTarget *proxy = [[ONLWeakTapTarget alloc] init];
+    if (!proxy) return;
+    proxy.target = groupList;
+
     id tap = ((id (*)(id, SEL, id, SEL))objc_msgSend)(
-        [tapCls alloc], @selector(initWithTarget:action:), groupList,
-        @selector(onl_handleStackGroupTap:));
+        [tapCls alloc], @selector(initWithTarget:action:), proxy,
+        @selector(onl_forwardTap:));
     if (!tap) return;
 
     // Must not eat touches — the notification cells underneath still need them.
@@ -334,7 +414,11 @@ static void onl_ensureTapRecognizer(id groupList) {
     if ([groupList respondsToSelector:@selector(addGestureRecognizer:)]) {
         ((void (*)(id, SEL, id))objc_msgSend)(groupList, @selector(addGestureRecognizer:), tap);
     }
-    objc_setAssociatedObject(groupList, kKeyTapRecognizer, tap,
+    // Keep the PROXY alive, not the recognizer. The view already retains the
+    // recognizer via addGestureRecognizer:, so retaining it again would be
+    // redundant; what needs an owner is the proxy, because the recognizer's
+    // reference to it is the only thing otherwise holding it.
+    objc_setAssociatedObject(groupList, kKeyTapRecognizer, proxy,
                              OBJC_ASSOCIATION_RETAIN_NONATOMIC);
 }
 
@@ -399,10 +483,19 @@ static id onl_groupListForView(id view) {
 
 // ---------------------------------------------------------------------------
 // Legacy Feature 1 (opt-in): merge after the 1st notification.
+//
+// These three are installed with MSHookMessageEx rather than %hook so they can
+// be registered conditionally. That means the orig_* pointers are only valid if
+// the hook actually took — if MSHookMessageEx failed they stay NULL and calling
+// them would jump to address 0. Every call site below therefore checks first.
 // ---------------------------------------------------------------------------
 static id (*orig_threadIdentifier)(id, SEL);
 static id hook_threadIdentifier(id self, SEL _cmd) {
-    if (!g_mergeEarly) return orig_threadIdentifier(self, _cmd);
+    if (!g_mergeEarly || !orig_threadIdentifier) {
+        // Feature off, or hook never installed: fall through to a safe answer.
+        if (orig_threadIdentifier) return orig_threadIdentifier(self, _cmd);
+        return onl_send0(self, @selector(sectionIdentifier));
+    }
     // Force every notification of an app onto one thread => one collapsible
     // group, so the 2nd notification already merges into the bar.
     if ([self respondsToSelector:@selector(sectionIdentifier)]) {
@@ -413,11 +506,13 @@ static id hook_threadIdentifier(id self, SEL _cmd) {
 
 static NSUInteger (*orig_collapsingThreshold)(id, SEL);
 static NSUInteger hook_collapsingThreshold(id self, SEL _cmd) {
+    if (!orig_collapsingThreshold) return 4;   // iOS default, safe fallback
     return g_mergeEarly ? kCollapseThreshold : orig_collapsingThreshold(self, _cmd);
 }
 
 static NSUInteger (*orig_dynamicGroupingThreshold)(id, SEL);
 static NSUInteger hook_dynamicGroupingThreshold(id self, SEL _cmd) {
+    if (!orig_dynamicGroupingThreshold) return 4;   // iOS default, safe fallback
     return g_mergeEarly ? kCollapseThreshold : orig_dynamicGroupingThreshold(self, _cmd);
 }
 
@@ -430,12 +525,12 @@ static NSUInteger hook_dynamicGroupingThreshold(id self, SEL _cmd) {
 // redirects any request that still lands in history back into the incoming
 // section, which is the section that stays alive across unlock.
 - (void)migrateNotificationsFromIncomingSectionToHistorySection {
-    if (ONL_ACTIVE) { ndh_log(@"[NDH] blocked migrate (no-arg)"); return; }
+    if (ONL_ACTIVE) { return; }
     %orig;
 }
 
 - (void)migrateNotificationsFromIncomingSectionToHistorySectionAndHideHistorySection:(BOOL)hide {
-    if (ONL_ACTIVE) { ndh_log(@"[NDH] blocked migrate+hide"); return; }
+    if (ONL_ACTIVE) { return; }
     %orig;
 }
 
@@ -484,7 +579,6 @@ static NSUInteger hook_dynamicGroupingThreshold(id self, SEL _cmd) {
     if (section && history && section == history) {
         id incoming = onl_send0(self, @selector(incomingSectionList));
         if (incoming) {
-            ndh_log(@"[NDH] redirected request history -> incoming");
             return incoming;
         }
     }
@@ -509,15 +603,20 @@ static NSUInteger hook_dynamicGroupingThreshold(id self, SEL _cmd) {
 // ---------------------------------------------------------------------------
 %hook NCNotificationGroupList
 
-// Lazily install our tap recognizer the first time the list view shows up.
+// Install our tap recognizer the first time a list view is assigned.
+//
+// Setter only — deliberately NOT the getter. groupListView is read on every
+// layout pass, so hanging an idempotency check off it meant a
+// respondsToSelector + associated-object lookup per read for a one-time
+// setup. If a group list somehow never receives a setGroupListView: call the
+// recognizer is simply absent and taps fall through to the system, which is a
+// graceful degradation rather than a crash.
 - (void)setGroupListView:(id)groupListView {
     %orig;
     if (ONL_ACTIVE) onl_ensureTapRecognizer(self);
 }
 - (id)groupListView {
-    id v = %orig;
-    if (ONL_ACTIVE) onl_ensureTapRecognizer(self);
-    return v;
+    return %orig;
 }
 
 // Track expansion state. In NCNotificationGroupList, grouped==YES means the
@@ -551,7 +650,6 @@ static NSUInteger hook_dynamicGroupingThreshold(id self, SEL _cmd) {
                                  OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     } else {
         if (!onl_expansionAllowed(self)) {
-            ndh_log(@"[NDH] blocked system-initiated expand");
             return;
         }
         objc_setAssociatedObject(self, kKeyExpanded, (id)kCFBooleanTrue,
@@ -578,7 +676,6 @@ static NSUInteger hook_dynamicGroupingThreshold(id self, SEL _cmd) {
         return;
     }
     if (onl_shouldExpand(self) && !onl_expansionAllowed(self)) {
-        ndh_log(@"[NDH] blocked toggleGroupedState");
         return;
     }
     %orig;
@@ -631,11 +728,9 @@ static NSUInteger hook_dynamicGroupingThreshold(id self, SEL _cmd) {
     if ([flag boolValue]) {
         objc_setAssociatedObject(self, kKeyStackTap, nil,
                                  OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-        ndh_log(@"[NDH] consumed marked stack tap");
         return NO;
     }
     if (onl_shouldExpand(self)) {
-        ndh_log(@"[NDH] swallowed handleTapOnNotificationViewController");
         return NO;
     }
     %orig;
@@ -688,7 +783,6 @@ static NSUInteger hook_dynamicGroupingThreshold(id self, SEL _cmd) {
     }
 
     if (groupList && onl_shouldExpand(groupList) && !onl_expansionAllowed(groupList)) {
-        ndh_log(@"[NDH] swallowed handleTapOnNotificationListBaseComponent");
         return NO;
     }
     return %orig;
@@ -716,7 +810,6 @@ static NSUInteger hook_dynamicGroupingThreshold(id self, SEL _cmd) {
         if (d) groupList = onl_groupListForView(d);
     }
     if (groupList && onl_shouldExpand(groupList)) {
-        ndh_log(@"[NDH] swallowed short-look _handleTapOnView");
         return NO;
     }
     return %orig;
@@ -747,17 +840,12 @@ static void ndh_loadPrefs(void) {
     } else {
         g_mergeEarly = NO;
     }
-
-    g_debug = [[NSFileManager defaultManager]
-               fileExistsAtPath:@"/var/jb/tmp/ndh_debug"];
 }
 
 static void ndh_reloadPrefs(CFNotificationCenterRef center, void *observer,
                             CFStringRef name, const void *object,
                             CFDictionaryRef userInfo) {
     ndh_loadPrefs();
-    ndh_log(@"[NDH] prefs reloaded: enabled=%d mergeEarly=%d",
-            g_enabled, g_mergeEarly);
 }
 
 // Hook only if the class and selector both exist, so a future iOS change can
@@ -847,14 +935,6 @@ static BOOL ndh_installStackTapHandler(void) {
     return class_addMethod(cls, sel, (IMP)&hook_onl_handleStackGroupTap, "v@:@");
 }
 
-// Boot-time banner. Kept in a plain C function, NOT inline in %ctor: Logos
-// preprocesses %ctor blocks too, and a printf-style format specifier inside one
-// of its blocks breaks its block tracking (see the note above %hook).
-static void ndh_logBoot(NSString *ver, BOOL supported) {
-    ndh_log(@"[NDH] ctor: iOS=%@ supported=%d enabled=%d mergeEarly=%d",
-            ver, supported, g_enabled, g_mergeEarly);
-}
-
 %ctor {
     ndh_loadPrefs();
 
@@ -865,8 +945,6 @@ static void ndh_logBoot(NSString *ver, BOOL supported) {
     NSComparisonResult cmp = [ver compare:@"16.0" options:NSNumericSearch];
     NSComparisonResult cmp17 = [ver compare:@"17.0" options:NSNumericSearch];
     g_supported = (cmp != NSOrderedAscending) && (cmp17 == NSOrderedAscending);
-
-    ndh_logBoot(ver, g_supported);
 
     CFNotificationCenterAddObserver(
         CFNotificationCenterGetDarwinNotifyCenter(), NULL,
@@ -905,8 +983,6 @@ static void ndh_logBoot(NSString *ver, BOOL supported) {
 
     // Tap handler, installed with _class_addMethod (see the note above).
     if (ndh_installStackTapHandler()) {
-        ndh_log(@"[NDH] onl_handleStackGroupTap: installed");
     } else {
-        ndh_log(@"[NDH] onl_handleStackGroupTap: install FAILED");
     }
 }
