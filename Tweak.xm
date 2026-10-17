@@ -53,6 +53,8 @@
 // ============================================================================
 
 #import <Foundation/Foundation.h>
+#import <UIKit/UIKit.h>
+#import <CoreGraphics/CoreGraphics.h>
 #import <substrate.h>
 #import <objc/runtime.h>
 #import <objc/message.h>
@@ -127,6 +129,14 @@ static id onl_send0(id obj, SEL sel) {
 static id onl_send1(id obj, SEL sel, id arg) {
     if (!obj || ![obj respondsToSelector:sel]) return nil;
     return ((id (*)(id, SEL, id))objc_msgSend)(obj, sel, arg);
+}
+
+// Send a one-arg (NSUInteger index) message that returns an object, safely.
+// Needed for objectAtIndex: — casting an integer to id is disallowed under ARC
+// ("cast of 'uintptr_t' to 'id' is disallowed"), so pass it as a real integer.
+static id onl_sendIndex(id obj, SEL sel, NSUInteger idx) {
+    if (!obj || ![obj respondsToSelector:sel]) return nil;
+    return ((id (*)(id, SEL, NSUInteger))objc_msgSend)(obj, sel, idx);
 }
 
 // Send a zero-arg message that returns NSUInteger, safely.
@@ -247,7 +257,7 @@ static void onl_forceExpand(id groupList) {
         if (reqs) {
             NSUInteger n = onl_sendUInt0(reqs, @selector(count));
             for (NSUInteger i = 0; i < n; i++) {
-                id req = onl_send1(reqs, @selector(objectAtIndex:), (id)(uintptr_t)i);
+                id req = onl_sendIndex(reqs, @selector(objectAtIndex:), i);
                 if (!req) continue;
                 id cell = onl_send1(me, @selector(_currentCellForNotificationRequest:), req);
                 if (!cell) continue;
@@ -644,7 +654,7 @@ static NSUInteger hook_dynamicGroupingThreshold(id self, SEL _cmd) {
         if (req && groups) {
             NSUInteger n = onl_sendUInt0(groups, @selector(count));
             for (NSUInteger i = 0; i < n; i++) {
-                id g = onl_send1(groups, @selector(objectAtIndex:), (id)(uintptr_t)i);
+                id g = onl_sendIndex(groups, @selector(objectAtIndex:), i);
                 if (!g) continue;
                 if (onl_isKindOfClass(g, glCls) &&
                     [g respondsToSelector:@selector(isGroupForNotificationRequest:)]) {
