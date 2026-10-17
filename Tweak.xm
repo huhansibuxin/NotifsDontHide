@@ -404,21 +404,12 @@ static NSUInteger hook_dynamicGroupingThreshold(id self, SEL _cmd) {
 }
 
 // (C) Pin the list display style so the incoming section is never collapsed
-// away, and never marked hidden-for-user-interaction.
-- (void)setCurrentListDisplayStyleSetting:(NSInteger)setting {
-    // NOTE: pass an explicitly-typed literal, never YES/NO — those expand to
-    // __objc_yes/__objc_no and choke Logos %orig argument inference (the 1.0.43
-    // build failure).
-    if (ONL_ACTIVE) { %orig((NSInteger)0); return; }
-    %orig;
-}
+// away, and never marked hidden-for-user-interaction. The four SETTERS that
+// rewrite their argument live below as typed IMPs — Logos %orig cannot do that
+// on private methods ("Invalid argument structure", the 1.0.43/1.0.44 failure).
 - (NSInteger)currentListDisplayStyleSetting {
     if (ONL_ACTIVE) return 0;
     return %orig;
-}
-- (void)setListDisplayStyleHiddenForUserInteraction:(BOOL)hidden {
-    if (ONL_ACTIVE) { %orig((BOOL)0); return; }
-    %orig;
 }
 - (BOOL)isListDisplayStyleHiddenForUserInteraction {
     if (ONL_ACTIVE) return NO;
@@ -427,17 +418,9 @@ static NSUInteger hook_dynamicGroupingThreshold(id self, SEL _cmd) {
 
 // (D) History must NEVER be revealed — the opposite of the old approach. With
 // no history section there is no empty-hint problem to race against.
-- (void)setNotificationHistoryRevealed:(BOOL)revealed {
-    if (ONL_ACTIVE) { %orig((BOOL)0); return; }
-    %orig;
-}
 - (BOOL)isNotificationHistoryRevealed {
     if (ONL_ACTIVE) return NO;
     return %orig;
-}
-- (void)setShouldAllowNotificationHistoryReveal:(BOOL)allow {
-    if (ONL_ACTIVE) { %orig((BOOL)0); return; }
-    %orig;
 }
 - (BOOL)shouldAllowNotificationHistoryReveal {
     if (ONL_ACTIVE) return NO;
@@ -743,12 +726,50 @@ static void ndh_reloadPrefs(CFNotificationCenterRef center, void *observer,
 }
 
 // Hook only if the class and selector both exist, so a future iOS change can
-// never crash SpringBoard from this tweak. Used for the opt-in Feature 1 set,
-// which is declared with plain C functions rather than %hook.
+// never crash SpringBoard from this tweak. Used for the opt-in Feature 1 set
+// and for the argument-rewriting setters, which are declared with plain C
+// functions rather than %hook.
 static void ndh_try_hook(const char *clsName, SEL sel, IMP imp, IMP *orig) {
     Class cls = objc_getClass(clsName);
     if (!cls || !class_getInstanceMethod(cls, sel)) return;
     MSHookMessageEx(cls, sel, imp, orig);
+}
+
+// ---------------------------------------------------------------------------
+// Argument-rewriting setters — typed IMP, NOT Logos %orig.
+//
+// Logos %orig cannot rewrite an argument on a private method whose signature
+// it has to infer: every form fails with "Invalid argument structure in %orig"
+// (1.0.43 tried %orig((BOOL)1); 1.0.44 gave up on %orig for setters entirely
+// and switched to MSHookMessageEx + typed IMP). Keep this pattern — do not
+// "simplify" it back into %hook.
+// ---------------------------------------------------------------------------
+
+static void (*orig_setCurrentListDisplayStyleSetting)(id, SEL, NSInteger);
+static void hook_setCurrentListDisplayStyleSetting(id self, SEL _cmd, NSInteger setting) {
+    if (!orig_setCurrentListDisplayStyleSetting) return;
+    orig_setCurrentListDisplayStyleSetting(self, _cmd, ONL_ACTIVE ? 0 : setting);
+}
+
+static void (*orig_setListDisplayStyleHiddenForUserInteraction)(id, SEL, BOOL);
+static void hook_setListDisplayStyleHiddenForUserInteraction(id self, SEL _cmd, BOOL hidden) {
+    if (!orig_setListDisplayStyleHiddenForUserInteraction) return;
+    orig_setListDisplayStyleHiddenForUserInteraction(self, _cmd,
+                                                     ONL_ACTIVE ? (BOOL)0 : hidden);
+}
+
+static void (*orig_setNotificationHistoryRevealed)(id, SEL, BOOL);
+static void hook_setNotificationHistoryRevealed(id self, SEL _cmd, BOOL revealed) {
+    if (!orig_setNotificationHistoryRevealed) return;
+    orig_setNotificationHistoryRevealed(self, _cmd,
+                                        ONL_ACTIVE ? (BOOL)0 : revealed);
+}
+
+static void (*orig_setShouldAllowNotificationHistoryReveal)(id, SEL, BOOL);
+static void hook_setShouldAllowNotificationHistoryReveal(id self, SEL _cmd, BOOL allow) {
+    if (!orig_setShouldAllowNotificationHistoryReveal) return;
+    orig_setShouldAllowNotificationHistoryReveal(self, _cmd,
+                                                 ONL_ACTIVE ? (BOOL)0 : allow);
 }
 
 %ctor {
@@ -780,4 +801,23 @@ static void ndh_try_hook(const char *clsName, SEL sel, IMP imp, IMP *orig) {
                  @selector(dynamicGroupingThreshold),
                  (IMP)&hook_dynamicGroupingThreshold,
                  (IMP*)&orig_dynamicGroupingThreshold);
+
+    // Argument-rewriting setters — typed IMP (see the note above: Logos %orig
+    // cannot rewrite arguments on private methods).
+    ndh_try_hook("NCNotificationMasterList",
+                 @selector(setCurrentListDisplayStyleSetting:),
+                 (IMP)&hook_setCurrentListDisplayStyleSetting,
+                 (IMP*)&orig_setCurrentListDisplayStyleSetting);
+    ndh_try_hook("NCNotificationMasterList",
+                 @selector(setListDisplayStyleHiddenForUserInteraction:),
+                 (IMP)&hook_setListDisplayStyleHiddenForUserInteraction,
+                 (IMP*)&orig_setListDisplayStyleHiddenForUserInteraction);
+    ndh_try_hook("NCNotificationMasterList",
+                 @selector(setNotificationHistoryRevealed:),
+                 (IMP)&hook_setNotificationHistoryRevealed,
+                 (IMP*)&orig_setNotificationHistoryRevealed);
+    ndh_try_hook("NCNotificationMasterList",
+                 @selector(setShouldAllowNotificationHistoryReveal:),
+                 (IMP)&hook_setShouldAllowNotificationHistoryReveal,
+                 (IMP*)&orig_setShouldAllowNotificationHistoryReveal);
 }

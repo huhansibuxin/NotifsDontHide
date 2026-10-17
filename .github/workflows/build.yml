@@ -44,7 +44,20 @@ jobs:
           rm -rf sdks-master master.zip
 
       - name: Build
-        run: make package 2>&1 | tee build.log
+        # pipefail is mandatory: without it the exit status of this pipeline is
+        # tee's, not make's, so a failed build still reports success and the
+        # deb artifacts silently go missing.
+        run: |
+          set -o pipefail
+          make package 2>&1 | tee build.log
+
+      - name: Verify deb was produced
+        run: |
+          if ! ls packages/*.deb >/dev/null 2>&1; then
+            echo "::error::Build produced no .deb — check the Build step log above."
+            exit 1
+          fi
+          ls -la packages/*.deb
 
       - name: Upload deb
         if: always()
