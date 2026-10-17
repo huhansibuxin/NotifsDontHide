@@ -600,27 +600,6 @@ static NSUInteger hook_dynamicGroupingThreshold(id self, SEL _cmd) {
     return NO;
 }
 
-// Our own tap handler, added to the class at load time. Resolves the tapped
-// cell and fires its default action so a tap opens the notification.
-%new
-- (void)onl_handleStackGroupTap:(UIGestureRecognizer *)tap {
-    if (!ONL_ACTIVE) return;
-    if (!tap) return;
-    if ([tap state] != UIGestureRecognizerStateEnded) return;
-
-    UIView *groupView = (UIView *)self;
-    if (![groupView respondsToSelector:@selector(hitTest:withEvent:)]) return;
-
-    CGPoint p = [tap locationInView:groupView];
-    id hit = ((id (*)(id, SEL, CGPoint, id))objc_msgSend)(
-        groupView, @selector(hitTest:withEvent:), p, nil);
-    if (!hit) return;
-
-    id cell = onl_findCellInView(hit);
-    if (!cell) return;
-    onl_performCellAction(self, cell);
-}
-
 %end
 
 // ---------------------------------------------------------------------------
@@ -782,6 +761,46 @@ static void hook_setShouldAllowNotificationHistoryReveal(id self, SEL _cmd, BOOL
                                                  ONL_ACTIVE ? (BOOL)0 : allow);
 }
 
+// ---------------------------------------------------------------------------
+// Tap handler — installed with _class_addMethod, NOT Logos %new.
+//
+// %new makes Logos generate a category/implementation for the host class and
+// that output does not compile cleanly for these private classes ("function
+// definition is not allowed here" + a dangling brace). The original 0.0.2
+// binary uses _class_addMethod directly, which is both proven and gives us an
+// explicit type encoding instead of one Logos has to infer.
+//
+// Signature: void return, id self, SEL _cmd, id tap  ->  "v@:@"
+// ---------------------------------------------------------------------------
+static void hook_onl_handleStackGroupTap(id self, SEL _cmd, id tap) {
+    if (!ONL_ACTIVE) return;
+    if (!tap) return;
+    if (((NSInteger (*)(id, SEL))objc_msgSend)(tap, @selector(state))
+        != UIGestureRecognizerStateEnded) return;
+
+    if (![self respondsToSelector:@selector(hitTest:withEvent:)]) return;
+
+    CGPoint p = ((CGPoint (*)(id, SEL, id))objc_msgSend)(tap,
+                                                        @selector(locationInView:), self);
+    id hit = ((id (*)(id, SEL, CGPoint, id))objc_msgSend)(
+        self, @selector(hitTest:withEvent:), p, nil);
+    if (!hit) return;
+
+    id cell = onl_findCellInView(hit);
+    if (!cell) return;
+    onl_performCellAction(self, cell);
+}
+
+// Install the tap handler on NCNotificationGroupList. Returns YES on success.
+static BOOL ndh_installStackTapHandler(void) {
+    Class cls = objc_getClass("NCNotificationGroupList");
+    if (!cls) return NO;
+    SEL sel = @selector(onl_handleStackGroupTap:);
+    if (class_getInstanceMethod(cls, sel)) return YES;   // already there
+    // "v@:@" — void return, self, _cmd, id argument.
+    return class_addMethod(cls, sel, (IMP)&hook_onl_handleStackGroupTap, "v@:@");
+}
+
 %ctor {
     ndh_loadPrefs();
 
@@ -830,4 +849,11 @@ static void hook_setShouldAllowNotificationHistoryReveal(id self, SEL _cmd, BOOL
                  @selector(setShouldAllowNotificationHistoryReveal:),
                  (IMP)&hook_setShouldAllowNotificationHistoryReveal,
                  (IMP*)&orig_setShouldAllowNotificationHistoryReveal);
+
+    // Tap handler, installed with _class_addMethod (see the note above).
+    if (ndh_installStackTapHandler()) {
+        ndh_log(@"[NDH] onl_handleStackGroupTap: installed");
+    } else {
+        ndh_log(@"[NDH] onl_handleStackGroupTap: install FAILED");
+    }
 }
